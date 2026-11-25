@@ -1,7 +1,10 @@
 import * as THREE from './three.module.min.js';
+import { buildLeg, setSkin, setLayer, surf, inner, normalAt, INFO } from './anatomy.js';
+import { buildTray } from './instruments.js';
 import { systemPrompt, QUESTIONS, KEYWORDS, EXAM, TESTS, ORDERS, SEGS, US_Q, DX, TALK, STEPS, RUBRIC } from './data.js';
 
 // ================= 状态 =================
+const FONT = '"PingFang SC","Noto Sans SC","Noto Sans CJK SC","Microsoft YaHei","Source Han Sans SC",sans-serif';
 const $ = (id) => document.getElementById(id);
 const now = () => performance.now();
 const S = {
@@ -181,69 +184,91 @@ const room = new THREE.Group(); scene.add(room);
   wall.position.set(0, 2, -3.2); room.add(wall);
 }
 
-// ----- 患者模型 -----
+// ----- 患者模型（下肢为程序化解剖模型，见 anatomy.js） -----
 const SKIN = 0xe7c3a5;
 const mat = (c, o = {}) => new THREE.MeshLambertMaterial({ color: c, ...o });
 const patient = new THREE.Group(); scene.add(patient);
 const body = new THREE.Group(); patient.add(body);
 function capsule(r, len, c, x, y, z, parent = body) { const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 6, 16), mat(c)); m.position.set(x, y, z); parent.add(m); return m; }
-for (const sx of [1, -1]) {
-  capsule(0.074, 0.32, SKIN, 0.1 * sx, 0.68, 0);
-  capsule(0.054, 0.32, SKIN, 0.1 * sx, 0.29, 0);
-  const foot = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.09, 0.22), mat(SKIN)); foot.position.set(0.1 * sx, 0.045, 0.04); body.add(foot);
-  const arm = capsule(0.038, 0.46, SKIN, 0.235 * sx, 1.13, 0); arm.rotation.z = 0.08 * sx;
-}
-const shorts = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.2, 0.2, 24), mat(0x5d6b7a)); shorts.position.y = 0.92; body.add(shorts);
+for (const sx of [1, -1]) { const arm = capsule(0.038, 0.46, SKIN, 0.235 * sx, 1.13, 0); arm.rotation.z = 0.08 * sx; }
+const legL = buildLeg({ side: 1, varicose: true, skinColor: SKIN }), legRt = buildLeg({ side: -1, varicose: false, skinColor: SKIN });
+const hipR = new THREE.Group(); hipR.position.set(-0.1, 0.92, 0); hipR.rotation.z = -0.11; legRt.group.position.set(0.1, -0.92, 0); hipR.add(legRt.group); body.add(legL.group, hipR);
+const shorts = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.205, 0.17, 28), mat(0x5d6b7a)); shorts.position.y = 0.935; body.add(shorts);
 const torso = capsule(0.155, 0.36, 0x8fb8c8, 0, 1.22, 0); torso.scale.set(1.05, 1, 0.7);
 capsule(0.04, 0.05, SKIN, 0, 1.5, 0);
 const head = new THREE.Mesh(new THREE.SphereGeometry(0.1, 24, 16), mat(SKIN)); head.position.set(0, 1.62, 0); body.add(head);
 const hair = new THREE.Mesh(new THREE.SphereGeometry(0.105, 24, 12, 0, Math.PI * 2, 0, 1.7), mat(0x3b3430)); hair.position.set(0, 1.635, -0.01); hair.rotation.x = -0.35; body.add(hair);
 const pants = new THREE.Group(); body.add(pants);
-for (const sx of [1, -1]) { const p = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.082, 0.8, 20), mat(0x4a5562)); p.position.set(0.1 * sx, 0.47, 0); pants.add(p); }
+const pantsR = new THREE.Group(); legRt.group.add(pantsR);
+for (const sx of [1, -1]) { const g = sx > 0 ? pants : pantsR; const p = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.085, 0.84, 24), mat(0x4a5562)); p.position.set(0.1 * sx, 0.47, 0.002); g.add(p); const f = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.075, 0.24), mat(0x2e3238)); f.position.set(0.1 * sx, 0.037, 0.06); g.add(f); }
+function setPants(v) { pants.visible = pantsR.visible = v; }
 
-// 左下肢大隐静脉（患者左侧 = +x），曲线从 SFJ 向远端
-const legR = (y) => y > 0.52 ? 0.079 : y < 0.42 ? 0.059 : 0.059 + (y - 0.42) / 0.1 * 0.02;
-function surf(y, a, cx = 0.1, extra = 0.004) { const r = legR(y) + extra; return new THREE.Vector3(cx - r * Math.sin(a), y, r * Math.cos(a)); }
-const gsvPts = [];
-for (let i = 0; i <= 40; i++) { const y = 0.86 - i * (0.86 - 0.18) / 40; const a = 0.95 + 0.25 * Math.sin(i * 0.9) + (y < 0.6 ? 0.1 : 0); gsvPts.push(surf(y, a)); }
-const gsvCurve = new THREE.CatmullRomCurve3(gsvPts);
-const VEIN = new THREE.Color(0x3a4f9e), VEIN_E = new THREE.Color(0xc9a896), ABL = new THREE.Color(0x8a8a8a);
-const veinSegs = [];
-const N_SEG = 12;
-for (let s = 0; s < N_SEG; s++) {
-  const u0 = s / N_SEG, u1 = (s + 1) / N_SEG; const pts = []; for (let k = 0; k <= 6; k++) pts.push(gsvCurve.getPointAt(u0 + (u1 - u0) * k / 6));
-  const m = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 12, 0.0075, 8), mat(VEIN.clone()));
-  m.userData = { u0, u1, fill: 1, abl: 0 }; body.add(m); veinSegs.push(m);
-}
-const tribs = [];
-for (const [y0, a0, len, dir] of [[0.42, 1.0, 0.16, 1], [0.36, 1.1, 0.14, -1], [0.28, 0.9, 0.12, 1], [0.6, 1.0, 0.1, -1]]) {
-  const pts = []; for (let k = 0; k <= 10; k++) { const y = y0 - k * len / 10; pts.push(surf(y, a0 + dir * k * 0.06 + 0.15 * Math.sin(k * 1.7))); }
-  const m = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, 0.0055, 8), mat(VEIN.clone())); m.userData = { fill: 1, abl: 0, trib: true }; body.add(m); tribs.push(m);
-}
-{ // 内踝上方色素沉着
-  const p = surf(0.15, 1.15, 0.1, 0.0015); const m = new THREE.Mesh(new THREE.CircleGeometry(0.03, 24), mat(0x6e4a2f, { transparent: true, opacity: 0.85 }));
-  m.scale.set(0.85, 1.1, 1); m.position.copy(p); m.lookAt(p.clone().add(new THREE.Vector3(-Math.sin(1.15), 0, Math.cos(1.15)))); body.add(m);
-  for (let i = 0; i < 6; i++) { const q = surf(0.3 + i * 0.02, -1.6 + (i % 3) * 0.15, -0.1, 0.002); const sp = new THREE.Mesh(new THREE.CylinderGeometry(0.0015, 0.0015, 0.03, 4), mat(0xc0483f)); sp.position.copy(q); sp.rotation.z = 0.6 * (i % 2 ? 1 : -1); body.add(sp); }
-}
-const tourniquet = new THREE.Mesh(new THREE.TorusGeometry(0.086, 0.012, 8, 24), mat(0x2f6fdf)); tourniquet.rotation.x = Math.PI / 2; tourniquet.position.set(0.1, 0.83, 0); tourniquet.visible = false; body.add(tourniquet);
-// 手术用：深静脉、导管、肿胀晕圈、绷带、手术台
-const deep = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([new THREE.Vector3(0.09, 0.95, 0.02), new THREE.Vector3(0.095, 0.86, 0.0), new THREE.Vector3(0.11, 0.6, -0.02), new THREE.Vector3(0.1, 0.46, -0.03)]), 20, 0.013, 8), mat(0x1d2d6b, { transparent: true, opacity: 0.55 }));
-deep.visible = false; body.add(deep);
-const sfjRing = new THREE.Mesh(new THREE.TorusGeometry(0.014, 0.003, 6, 16), mat(0xffb020)); sfjRing.position.copy(gsvCurve.getPointAt(0)); sfjRing.visible = false; body.add(sfjRing);
+const gsvCurve = legL.gsvCurve, veinSegs = legL.gsvSegs, tribs = legL.tribs.filter(t => ['trib', 'pav'].includes(t.userData.key));
+const VEIN = new THREE.Color(0x3a56b8), VEIN_E = new THREE.Color(0xc9a896), ABL = new THREE.Color(0x8a8a8a);
+const U_KNEE = legL.uAtY(0.45), U_TIP = 0.025 / legL.length + 0.006, U_THIGH = legL.uAtY(0.68), U_ANKLE = legL.uAtY(0.11);
+STEPS[5].tip = [U_TIP, 0.004, -1, U_THIGH];
+const tourniquet = new THREE.Mesh(new THREE.TorusGeometry(0.093, 0.011, 8, 28), mat(0x2f6fdf)); tourniquet.rotation.x = Math.PI / 2; tourniquet.position.set(0.1, 0.8, 0); tourniquet.visible = false; body.add(tourniquet);
+// 手术用：导管、肿胀晕圈、绷带、手术台、器械盘
 const catheter = new THREE.Mesh(new THREE.BufferGeometry(), mat(0xf5f5f5)); catheter.visible = false; body.add(catheter);
-const halo = new THREE.Mesh(new THREE.BufferGeometry(), mat(0x6fd3ff, { transparent: true, opacity: 0.35 })); halo.visible = false; body.add(halo);
-const U_KNEE = 0.55;
-function tubeAlong(u0, u1, r) { const pts = []; for (let k = 0; k <= 16; k++) pts.push(gsvCurve.getPointAt(u0 + (u1 - u0) * k / 16)); return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 32, r, 8); }
+const catTip = new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.0022, 0.07, 10), new THREE.MeshStandardMaterial({ color: 0xc8803c, metalness: 0.6, roughness: 0.3, emissive: 0x000000 })); catTip.visible = false; body.add(catTip);
+const halo = new THREE.Mesh(new THREE.BufferGeometry(), mat(0x6fd3ff, { transparent: true, opacity: 0.35, depthWrite: false })); halo.visible = false; body.add(halo);
+function tubeAlong(u0, u1, r) { const pts = []; for (let k = 0; k <= 24; k++) pts.push(gsvCurve.getPointAt(Math.max(0, u0 + (u1 - u0) * k / 24))); return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 48, r, 8); }
 function setCatheter(uTip) {
   catheter.geometry.dispose();
-  if (uTip < 0) { const p0 = gsvCurve.getPointAt(0), pts = []; for (let k = 0; k <= 16; k++) pts.push(gsvCurve.getPointAt(U_KNEE * (1 - k / 16))); pts.push(p0.clone().add(new THREE.Vector3(-0.01, 0.04, -0.03))); catheter.geometry = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 40, 0.0035, 6); }
-  else catheter.geometry = tubeAlong(uTip, U_KNEE, 0.0035);
+  let tipP, dir;
+  if (uTip < 0) { const pts = []; for (let k = 0; k <= 24; k++) pts.push(gsvCurve.getPointAt(U_KNEE * (1 - k / 24))); const into = legL.sfjDeep.clone().add(new THREE.Vector3(0.004, 0.035, -0.004)); pts.push(into); catheter.geometry = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 60, 0.0022, 6); tipP = into; dir = new THREE.Vector3(0, 1, 0); }
+  else { catheter.geometry = tubeAlong(uTip, U_KNEE, 0.0022); tipP = gsvCurve.getPointAt(uTip); dir = gsvCurve.getTangentAt(Math.min(0.99, uTip + 0.02)).negate(); }
   catheter.visible = true;
+  const back = tipP.clone().addScaledVector(dir, -0.035); catTip.position.copy(back); catTip.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize()); catTip.visible = true;
 }
+function hideCatheter() { catheter.visible = catTip.visible = false; }
 const bandages = [];
-for (let i = 0; i < 12; i++) { const y = 0.1 + i * 0.065; const b = new THREE.Mesh(new THREE.CylinderGeometry(legR(y) + 0.01, legR(y) + 0.01, 0.055, 20, 1, true), mat(0xf0ede4, { side: THREE.DoubleSide })); b.position.set(0.1, y, 0); b.visible = false; body.add(b); bandages.push(b); }
+for (let i = 0; i < 13; i++) {
+  const y0 = 0.07 + i * 0.062, NY = 6, NT = 48, pos = [], idx = [];
+  for (let j = 0; j <= NY; j++) for (let k = 0; k <= NT; k++) { const p = surf(y0 + 0.066 * j / NY, -Math.PI + 2 * Math.PI * k / NT, 1, 0.0045 + 0.0015 * Math.sin(j / NY * Math.PI)); pos.push(p.x, p.y, p.z); }
+  for (let j = 0; j < NY; j++) for (let k = 0; k < NT; k++) { const a = j * (NT + 1) + k, b = a + NT + 1; idx.push(a, a + 1, b, a + 1, b + 1, b); }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setIndex(idx); geo.computeVertexNormals();
+  const b = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: i % 2 ? 0xeadfc8 : 0xe3d6bb, roughness: 0.95 })); b.visible = false; body.add(b); bandages.push(b);
+}
+const drape = new THREE.Group(); drape.visible = false; body.add(drape);
+{ const dm = new THREE.MeshStandardMaterial({ color: 0x3f8f9c, roughness: 0.95 });
+  const d1 = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.92, 0.2), dm); d1.position.set(-0.1, 0.48, 0.0); drape.add(d1);
+  const d2 = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.34, 0.24), dm); d2.position.set(0, 1.1, 0.0); drape.add(d2);
+  const d3 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.23), dm); d3.position.set(0.02, 0.92, 0.0); drape.add(d3); }
 const table = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.06, 1.9), mat(0x7c8a96)); table.position.set(0.55, 0.72, -1.75); table.visible = false; scene.add(table);
 const tableLeg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.7, 0.2), mat(0x5e6b77)); tableLeg.position.set(0.55, 0.35, -1.75); tableLeg.visible = false; scene.add(tableLeg);
+const tray = buildTray(); tray.group.position.set(1.02, 0.95, -0.85); tray.group.rotation.y = -0.5; tray.group.visible = false; scene.add(tray.group);
+const toolPick = []; for (const t of Object.values(tray.tools)) t.traverse(o => { if (o.isMesh) toolPick.push(o); });
+
+// 解剖导览：放大的独立左下肢模型
+const showcase = new THREE.Group(); scene.add(showcase); showcase.visible = false;
+const legA = buildLeg({ side: 1, varicose: true, skinColor: SKIN });
+legA.group.position.set(-0.1, 0, 0); showcase.add(legA.group); showcase.scale.setScalar(1.45); showcase.position.set(0.62, 0.12, -1.15);
+const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.06, 32), mat(0x9aa6b2)); stand.position.set(0.62, 0.03, -1.15); stand.visible = false; scene.add(stand);
+const A = { skin: 'xray', on: { sup: true, perf: true, deep: true, art: true, nerve: true, bone: true, fascia: false }, sel: null, rot: 0, labels: true };
+const LAYER_NAMES = [['sup', '浅静脉'], ['perf', '穿通静脉'], ['deep', '深静脉'], ['art', '动脉'], ['nerve', '神经'], ['bone', '骨骼'], ['fascia', '隐筋膜']];
+function applyAnatomy() {
+  setSkin(legA, A.skin); for (const [k] of LAYER_NAMES) setLayer(legA, k, A.on[k]);
+  for (const m of legA.pick) { const sel = A.sel && m.userData.key === A.sel; if (m.material.emissive) m.material.emissive.setHex(sel ? 0x553300 : 0x000000); }
+  showcase.rotation.y = A.rot; labelGroup.visible = A.labels;
+}
+// 结构标签
+const labelGroup = new THREE.Group(); showcase.add(labelGroup);
+function labelSprite(text) {
+  const c = document.createElement('canvas'), x = c.getContext('2d'); x.font = '600 40px ' + FONT; const w = Math.ceil(x.measureText(text).width) + 36; c.width = w; c.height = 64;
+  x.fillStyle = 'rgba(255,255,255,0.92)'; rr(x, 0, 4, w, 56, 14); x.fill(); x.fillStyle = '#14202b'; x.font = '600 40px ' + FONT; x.textBaseline = 'middle'; x.fillText(text, 18, 33);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false })); s.scale.set(w / 64 * 0.022, 0.022, 1); s.renderOrder = 20; return s;
+}
+{
+  const pt = (y, th, f) => inner(y, th, f, 1), L = [
+    ['sfj', '隐股交界', legL.sfjDeep, -0.09], ['gsv', '大隐静脉', gsvCurve.getPointAt(0.3), -0.09], ['trib', '曲张属支', surf(0.34, -1.5, 1, 0.004), -0.08], ['gsv', '大隐静脉（膝下）', gsvCurve.getPointAt(0.62), -0.1],
+    ['cfv', '股总静脉', pt(0.92, -0.35, 0.53), -0.07], ['cfa', '股动脉', pt(0.9, -0.12, 0.5), 0.1], ['pop', '腘静脉', pt(0.49, 3.05, 0.42), 0.12], ['ssv', '小隐静脉', surf(0.3, 3.1, 1, 0), 0.12],
+    ['perf', 'Cockett 穿通支', surf(0.27, -2.0, 1, 0), -0.12], ['saph_n', '隐神经', surf(0.24, -1.55, 1, -0.0075), -0.12], ['tib', '胫后静脉', pt(0.2, -2.3, 0.5), -0.11], ['femur', '股骨', pt(0.7, 0.3, 0.1), 0.12], ['tibia', '胫骨', pt(0.3, 0.2, 0.35), 0.1], ['aasv', '前副隐静脉', surf(0.72, -0.05, 1, 0), 0.1]];
+  for (const [key, text, p, dx] of L) {
+    const s = labelSprite(text); const q = p.clone().add(new THREE.Vector3(dx, 0.012, 0.03)).add(new THREE.Vector3(-0.1, 0, 0)); s.position.copy(q); s.userData.key = key; labelGroup.add(s);
+    const ln = new THREE.Line(new THREE.BufferGeometry().setFromPoints([p.clone().add(new THREE.Vector3(-0.1, 0, 0)), q]), new THREE.LineBasicMaterial({ color: 0x14202b, depthTest: false, transparent: true, opacity: 0.6 })); ln.renderOrder = 19; labelGroup.add(ln);
+  }
+}
 
 // 气泡（患者说话）
 const bubbleCv = document.createElement('canvas'); bubbleCv.width = 900; bubbleCv.height = 300;
@@ -258,31 +283,33 @@ function setBubble(t) {
   bubbleTex.needsUpdate = true; bubble.visible = !!t && S.mod !== 'surg';
 }
 
-// 查体热点
+// 查体热点（投影到皮面）
 const hotspots = [];
-const hsGeo = new THREE.SphereGeometry(0.018, 16, 10);
+const hsGeo = new THREE.SphereGeometry(0.016, 16, 10);
 for (const e of EXAM) if (e.hs) {
-  const m = new THREE.Mesh(hsGeo, new THREE.MeshBasicMaterial({ color: 0x1aa0b8, transparent: true, opacity: 0.85 }));
-  m.position.set(...e.hs); m.userData = { hs: e.id, kind: 'exam', label: e.label }; m.visible = false; body.add(m); hotspots.push(m);
+  const m = new THREE.Mesh(hsGeo, new THREE.MeshBasicMaterial({ color: 0x14a6bf, transparent: true, opacity: 0.88 }));
+  const h = e.hs; if (h.p) m.position.set(...h.p); else m.position.copy(surf(h.y, h.t, h.s, 0.014));
+  m.userData = { hs: e.id, kind: 'exam', label: e.label }; m.visible = false; (h.s === -1 ? legRt.group : body).add(m); hotspots.push(m);
 }
-const SURG_SPOTS = [['groin', '腹股沟（SFJ 附近）', 0.03], ['thigh', '大腿中段', 0.3], ['knee', '膝下 / 膝水平', U_KNEE], ['ankle', '踝部', 0.97]];
+const SURG_SPOTS = [['groin', '腹股沟（SFJ 附近）', 0.012], ['thigh', '大腿中段', U_THIGH], ['knee', '膝下 / 膝水平', U_KNEE], ['ankle', '踝部', U_ANKLE]];
 for (const [id, label, u] of SURG_SPOTS) {
-  const m = new THREE.Mesh(new THREE.SphereGeometry(0.02, 16, 10), new THREE.MeshBasicMaterial({ color: 0x2f6fdf, transparent: true, opacity: 0.9 }));
-  const p = gsvCurve.getPointAt(u); m.position.set(p.x - 0.004, p.y, p.z + 0.012); m.userData = { hs: id, kind: 'surg', label }; m.visible = false; body.add(m); hotspots.push(m);
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.017, 16, 10), new THREE.MeshBasicMaterial({ color: 0x2f6fdf, transparent: true, opacity: 0.9 }));
+  const p = gsvCurve.getPointAt(u); m.position.copy(p).addScaledVector(normalAt(p), 0.016); m.userData = { hs: id, kind: 'surg', label }; m.visible = false; body.add(m); hotspots.push(m);
 }
 // 悬停标签
 const tipCv = document.createElement('canvas'); tipCv.width = 512; tipCv.height = 96;
 const tipTex = new THREE.CanvasTexture(tipCv); tipTex.colorSpace = THREE.SRGBColorSpace;
 const tipSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tipTex, depthTest: false })); tipSprite.scale.set(0.3, 0.056, 1); tipSprite.visible = false; tipSprite.renderOrder = 10; scene.add(tipSprite);
-function showTip(obj) {
+function showTip(obj, label) {
   if (!obj) { tipSprite.visible = false; return; }
+  label = label || obj.userData.label;
   const c = tipCv.getContext('2d'); c.clearRect(0, 0, 512, 96); c.fillStyle = 'rgba(20,32,43,0.92)'; rr(c, 0, 8, 512, 80, 20); c.fill();
-  c.fillStyle = '#fff'; c.font = '38px ' + FONT; c.textAlign = 'center'; c.fillText(obj.userData.label, 256, 62); c.textAlign = 'left'; tipTex.needsUpdate = true;
+  c.fillStyle = '#fff'; c.font = '38px ' + FONT; c.textAlign = 'center'; c.fillText(label, 256, 62); c.textAlign = 'left'; tipTex.needsUpdate = true;
   obj.getWorldPosition(tipSprite.position); tipSprite.position.y += 0.07; tipSprite.visible = true;
 }
 
 // 姿态
-const POSE = { stand: { p: [0.62, 0, -1.55], r: [0, -0.38, 0] }, supine: { p: [0.55, 0.78, -0.95], r: [-Math.PI / 2, 0, 0] } };
+const POSE = { stand: { p: [0.62, 0, -1.55], r: [0, -0.38, 0] }, standMed: { p: [0.6, 0, -1.5], r: [0, 0.62, 0] }, supine: { p: [0.55, 0.78, -0.95], r: [-Math.PI / 2, 0, 0] } };
 let pose = 'stand';
 function setPose(name, ms = 900) {
   if (pose === name) return; pose = name; const a = { p: patient.position.clone(), r: patient.rotation.clone() }, b = POSE[name];
@@ -291,7 +318,7 @@ function setPose(name, ms = 900) {
 }
 patient.position.set(...POSE.stand.p); patient.rotation.set(...POSE.stand.r);
 const tweens = [];
-function tween(ms, fn, done) { tweens.push({ t0: now(), ms, fn, done }); }
+function tween(ms, fn, done, key) { if (key) for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].key === key) tweens.splice(i, 1); tweens.push({ t0: now(), ms, fn, done, key }); }
 function setFill(seg, f) { seg.userData.fill = f; paintVein(seg); }
 function paintVein(seg) { const d = seg.userData; const c = d.abl ? ABL : VEIN_E.clone().lerp(VEIN, d.fill); seg.material.color.copy(c); seg.scale.setScalar(1); }
 function fillVeins(from, to, ms, topDown = true) {
@@ -300,7 +327,6 @@ function fillVeins(from, to, ms, topDown = true) {
 }
 
 // ================= 面板 UI（画在 canvas 上，贴到 3D 平面） =================
-const FONT = '"PingFang SC","Noto Sans SC","Noto Sans CJK SC","Microsoft YaHei","Source Han Sans SC",sans-serif';
 const W = 1600, H = 1000;
 const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const ctx = cv.getContext('2d');
 const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
@@ -331,16 +357,19 @@ function btn(id, x, y, w, h, label, fn, o = {}) {
 function hitArea(id, x, y, w, h, fn) { hits.push({ id, x, y, w, h, fn }); }
 function card(x, y, w, h, fill = C.soft) { ctx.fillStyle = fill; rr(ctx, x, y, w, h, 14); ctx.fill(); }
 
-const MODS = [['home', '首页'], ['interview', '1 问诊'], ['exam', '2 查体'], ['orders', '3 开具检查'], ['us', '4 超声判读'], ['dx', '5 诊断决策'], ['talk', '6 告知患者'], ['surg', '7 热消融手术'], ['report', '8 评分报告']];
+const MODS = [['home', '首页'], ['anatomy', '解剖导览'], ['interview', '1 问诊'], ['exam', '2 查体'], ['orders', '3 开具检查'], ['us', '4 超声判读'], ['dx', '5 诊断决策'], ['talk', '6 告知患者'], ['surg', '7 热消融手术'], ['report', '8 评分报告']];
 const done = () => ({ interview: S.marks.size >= 8, exam: S.tests.trend.ans != null && S.tests.perthes.ans != null, orders: S.ordersDone, us: S.us.ans.c4 != null && S.us.ans.c5 != null, dx: S.dx.done, talk: S.talk.ans.length >= TALK.length, surg: S.surg.done.length >= 11 });
 function go(m) {
   if (m === 'us' && !S.orders.has('duplex')) { notify('请先在“开具检查”中开出静脉超声，结果才会释放', 'warn'); return; }
   S.mod = m; log('module', { m });
   hotspots.forEach(h => h.visible = (m === 'exam' && h.userData.kind === 'exam' && S.exam.exposed && S.exam.posture === 'stand') || (m === 'surg' && h.userData.kind === 'surg' && S.surg.cur === 3));
-  const surg = m === 'surg'; setPose(surg ? 'supine' : 'stand'); deep.visible = sfjRing.visible = surg;
-  if (surg) pants.visible = false; else pants.visible = !S.exam.exposed;
-  bubble.visible = !surg && S.chat.length > 0; tourniquet.visible = false;
-  if (!surg) { [...veinSegs, ...tribs].forEach(s => { s.userData.abl = 0; setFill(s, 1); }); catheter.visible = halo.visible = false; bandages.forEach(b => b.visible = false); }
+  const surg = m === 'surg', ana = m === 'anatomy';
+  patient.visible = !ana; showcase.visible = stand.visible = ana; if (ana) applyAnatomy();
+  setPose(surg ? 'supine' : m === 'exam' ? 'standMed' : 'stand'); tray.group.visible = surg;
+  setSkin(legL, surg && S.surg.xray ? 'xray' : 'solid');
+  setPants(surg ? false : !S.exam.exposed); drape.visible = surg; shorts.visible = !surg; hipR.visible = !surg;
+  bubble.visible = !surg && !ana && S.chat.length > 0; tourniquet.visible = false;
+  if (!surg) { [...veinSegs, ...tribs].forEach(s => { s.userData.abl = 0; setFill(s, 1); }); hideCatheter(); halo.visible = false; bandages.forEach(b => b.visible = false); allHome(true); }
   else restoreSurg3D();
   updateOverlay(); render();
 }
@@ -351,12 +380,12 @@ function render() {
   ctx.fillStyle = '#f5f7f9'; rr(ctx, 0, 0, 300, H, 28); ctx.fill(); ctx.fillRect(272, 0, 28, H);
   text('静脉曲张', 34, 30, { size: 34, w: '700' }); text('VR+AI 实习训练', 34, 74, { size: 22, color: C.sub });
   const dn = done();
-  MODS.forEach(([id, lb], i) => btn('nav-' + id, 20, 122 + i * 76, 260, 64, lb + (dn[id] ? '  ✓' : ''), () => go(id), { st: S.mod === id ? 'primary' : 'ghost', left: true, size: 26, bold: S.mod === id }));
+  MODS.forEach(([id, lb], i) => btn('nav-' + id, 20, 118 + i * 69, 260, 60, lb + (dn[id] ? '  ✓' : ''), () => go(id), { st: S.mod === id ? 'primary' : 'ghost', left: true, size: 26, bold: S.mod === id }));
   const t = totals();
   text('当前得分', 34, 820, { size: 20, color: C.sub }); text(t.total + ' / 100', 34, 846, { size: 34, w: '700' });
   text('对话：' + modeName(), 34, 904, { size: 20, color: AI.mode === 'script' ? C.warn : C.ok });
   text(renderer.xr.isPresenting ? 'MR/VR 模式中' : '电脑预览模式', 34, 934, { size: 20, color: C.sub });
-  ({ home: vHome, interview: vInterview, exam: vExam, orders: vOrders, us: vUS, dx: vDx, talk: vTalk, surg: vSurg, report: vReport })[S.mod]();
+  ({ home: vHome, anatomy: vAnatomy, interview: vInterview, exam: vExam, orders: vOrders, us: vUS, dx: vDx, talk: vTalk, surg: vSurg, report: vReport })[S.mod]();
   if (S.toast) { const k = S.toast.kind; card(320, 924, 1260, 60, k === 'bad' ? C.badSoft : k === 'warn' ? '#fff1d6' : k === 'ok' ? C.okSoft : C.blueSoft); text(S.toast.msg, 340, 940, { size: 24, maxW: 1220, lines: 1, color: k === 'bad' ? C.bad : k === 'warn' ? C.warn : k === 'ok' ? C.ok : C.blue }); }
   tex.needsUpdate = true;
 }
@@ -365,12 +394,31 @@ const title = (s, sub) => { text(s, 320, 26, { size: 38, w: '700' }); if (sub) t
 function vHome() {
   title('下肢静脉曲张初诊 · MR 训练原型', '标准病例：李某，女，54 岁，超市收银员。左下肢静脉迂曲扩张 10 余年，踝部皮肤发黑伴瘙痒 1 年。');
   const steps = [['1 问诊', 'AI 标准化病人对话，上限 12 分钟'], ['2 查体', '站立位视诊触诊、Trendelenburg / Perthes 试验'], ['3 开具检查', '开对超声才释放结果'], ['4 超声判读', '分节段查看反流、压闭'], ['5 诊断决策', '诊断、CEAP、鉴别、治疗'], ['6 告知患者', '用通俗语言回应顾虑'], ['7 热消融手术', '射频消融 11 步流程认知'], ['8 评分报告', '100 分量表 + AI 反馈']];
-  steps.forEach(([a, b], i) => { const x = 320 + (i % 4) * 318, y = 130 + Math.floor(i / 4) * 150; card(x, y, 302, 134); text(a, x + 20, y + 18, { size: 28, w: '700' }); text(b, x + 20, y + 62, { size: 21, color: C.sub, maxW: 262 }); hitArea('home-' + i, x, y, 302, 134, () => go(MODS[i + 1][0])); });
+  steps.forEach(([a, b], i) => { const x = 320 + (i % 4) * 318, y = 130 + Math.floor(i / 4) * 150; card(x, y, 302, 134); text(a, x + 20, y + 18, { size: 28, w: '700' }); text(b, x + 20, y + 62, { size: 21, color: C.sub, maxW: 262 }); hitArea('home-' + i, x, y, 302, 134, () => go(MODS[i + 2][0])); });
   card(320, 450, 1260, 300, '#f7f9fb');
   text('操作方法', 344, 468, { size: 26, w: '700' });
   text('头显：用手柄射线指向按钮，扣扳机确认；也可以捏合手指。患者身上的青色圆点是查体部位，手术时蓝色圆点是穿刺点。\n电脑：鼠标点击面板或患者；按住拖动转动视角。问诊时可在底部输入框打字或语音提问。\n大模型：在 claude.ai 中打开时由 Claude 扮演患者；独立部署时可在“设置”中填写兼容 OpenAI 格式的接口；都不可用时自动使用预设脚本对话。\n评分与数据：每一步自动按 100 分量表计分，第 8 步可查看明细、生成 AI 反馈、复制训练数据。', 344, 510, { size: 23, maxW: 1210, lh: 36 });
   btn('start', 320, 780, 360, 80, '开始训练：进入问诊', () => go('interview'), { st: 'primary', size: 28, bold: true });
-  text('病例为教学虚构，不对应真实患者；标【待审核】的医学数值以病例文档为准，待带教老师确认。', 710, 806, { size: 20, color: C.sub, maxW: 860 });
+  btn('toana', 700, 780, 300, 80, '先看解剖导览', () => go('anatomy'), { size: 26 });
+  text('病例为教学虚构，不对应真实患者；标【待审核】的医学数值以病例文档为准，待带教老师确认。', 1020, 790, { size: 20, color: C.sub, maxW: 560 });
+}
+
+function vAnatomy() {
+  title('解剖导览 · 左下肢', '放大 1.45 倍的教学示意模型。切换图层、旋转，点击模型上的结构或下方名称查看说明。');
+  text('皮肤', 320, 124, { size: 22, w: '700' });
+  [['solid', '实体'], ['xray', '透明'], ['hide', '隐藏']].forEach(([k, n], i) => btn('sk' + k, 390 + i * 126, 110, 116, 52, n, () => { A.skin = k; applyAnatomy(); }, { st: A.skin === k ? 'sel' : 'ghost' }));
+  btn('rotl', 790, 110, 150, 52, '向左转', () => { const r0 = A.rot; tween(500, k => { A.rot = r0 + Math.PI / 4 * k; showcase.rotation.y = A.rot; }); });
+  btn('rotr', 950, 110, 150, 52, '向右转', () => { const r0 = A.rot; tween(500, k => { A.rot = r0 - Math.PI / 4 * k; showcase.rotation.y = A.rot; }); });
+  btn('lab', 1110, 110, 170, 52, A.labels ? '标注：开' : '标注：关', () => { A.labels = !A.labels; applyAnatomy(); }, { st: A.labels ? 'sel' : 'ghost' });
+  btn('areset', 1290, 110, 150, 52, '复位', () => { A.rot = 0; A.sel = null; A.skin = 'xray'; for (const k in A.on) A.on[k] = k !== 'fascia'; applyAnatomy(); });
+  text('图层', 320, 190, { size: 22, w: '700' });
+  LAYER_NAMES.forEach(([k, n], i) => btn('ly' + k, 390 + i * 170, 176, 160, 52, n, () => { A.on[k] = !A.on[k]; applyAnatomy(); }, { st: A.on[k] ? 'sel' : 'ghost', size: 22 }));
+  const keys = Object.keys(INFO);
+  keys.forEach((k, i) => btn('st' + k, 320 + (i % 5) * 252, 250 + Math.floor(i / 5) * 58, 244, 50, INFO[k][0], () => { A.sel = k; const lay = legA.pick.find(m => m.userData.key === k)?.userData.layer; if (lay && lay !== 'skin') A.on[lay] = true; if (lay && lay !== 'skin' && A.skin === 'solid') A.skin = 'xray'; applyAnatomy(); }, { size: 19, st: A.sel === k ? 'primary' : 'ghost' }));
+  const y0 = 250 + Math.ceil(keys.length / 5) * 58 + 10;
+  card(320, y0, 1260, 900 - y0, '#f4f6f9');
+  if (A.sel) { text(INFO[A.sel][0], 344, y0 + 16, { size: 28, w: '700', color: C.blue }); text(INFO[A.sel][1], 344, y0 + 62, { size: 23, maxW: 1210, lh: 34, lines: 4 }); }
+  else text('颜色：浅静脉蓝色，深静脉深蓝，动脉红色，神经黄色，穿通静脉紫色，骨骼米白。大隐静脉主干在隐筋膜内较直，曲张的是小腿和大腿下段内侧的属支。\n这是按教材解剖关系程序化生成的示意模型，尺寸已简化，不是真实患者影像重建。', 344, y0 + 18, { size: 22, color: C.sub, maxW: 1210, lh: 32 });
 }
 
 function vInterview() {
@@ -414,7 +462,7 @@ function vExam() {
   btn('consent', 320, 110, 300, 60, E.consent ? '已说明并取得同意 ✓' : '向患者说明并取得同意', () => { E.consent = true; if (E.consentFirst == null) E.consentFirst = true; log('consent'); setBubble('好的医生，你检查吧。'); render(); }, { st: E.consent ? 'ok' : 'ghost' });
   btn('stand', 640, 110, 170, 60, '站立位', () => setPosture('stand'), { st: E.posture === 'stand' ? 'sel' : 'ghost' });
   btn('lie', 820, 110, 170, 60, '卧位', () => setPosture('lie'), { st: E.posture === 'lie' ? 'bad' : 'ghost' });
-  btn('expose', 1010, 110, 420, 60, E.exposed ? '已暴露双下肢至腹股沟 ✓' : '暴露双下肢至腹股沟', () => { E.exposed = true; pants.visible = false; log('expose'); go('exam'); }, { st: E.exposed ? 'ok' : 'ghost' });
+  btn('expose', 1010, 110, 420, 60, E.exposed ? '已暴露双下肢至腹股沟 ✓' : '暴露双下肢至腹股沟', () => { E.exposed = true; setPants(false); log('expose'); go('exam'); }, { st: E.exposed ? 'ok' : 'ghost' });
   const ready = E.exposed && E.posture === 'stand';
   EXAM.forEach((e, i) => { const x = 320 + (i % 4) * 317, y = 186 + Math.floor(i / 4) * 60; btn('ex-' + e.id, x, y, 309, 52, e.label, () => examine(e.id), { size: 22, st: E.found.has(e.id) ? 'sel' : 'ghost', dis: !ready && !['vitals', 'general'].includes(e.id) }); });
   card(320, 372, 1260, 120, '#f4f6f9');
@@ -596,24 +644,62 @@ function surgPick(i) {
   }
   startStep(i);
 }
-function startStep(i) { const G = S.surg; G.cur = i; G.wrongHere = 0; G.sub = {}; G.multi = new Set(); G.seqK = 0; G.anatK = 0; G.fb = G.fb && G.fb.startsWith('后果') ? G.fb : ''; log('surg_step', { i }); hotspots.forEach(h => h.visible = h.userData.kind === 'surg' && i === 3); render(); }
+function startStep(i) {
+  const G = S.surg; G.cur = i; G.wrongHere = 0; G.sub = {}; G.multi = new Set(); G.seqK = 0; G.anatK = 0; G.fb = G.fb && G.fb.startsWith('后果') ? G.fb : ''; log('surg_step', { i });
+  hotspots.forEach(h => h.visible = h.userData.kind === 'surg' && i === 3);
+  allHome(); if (i === 1 || i === 5) toolTo('probe', probePlace(0.03)); if (i === 3) toolTo('probe', probePlace(U_KNEE - 0.045)); if (i === 6) toolTo('probe', probePlace(U_THIGH - 0.04));
+  render();
+}
 function completeStep(fb) { const G = S.surg; G.sub.complete = true; G.done.push(G.cur); G.fb = '✓ ' + fb; after3D(G.cur); hotspots.forEach(h => { if (h.userData.kind === 'surg') h.visible = false; }); render(); }
+// 器械动画（世界坐标）
+const keepTools = () => { const d = S.surg.done; return d.includes(4) && !d.includes(8) ? ['sheath'] : []; };
+function toolTo(id, place, ms = 900) { const t = tray.tools[id]; scene.attach(t); const p0 = t.position.clone(), q0 = t.quaternion.clone(); tween(ms, (k) => { t.position.lerpVectors(p0, place.p, k); t.quaternion.slerpQuaternions(q0, place.q, k); }, null, 'tool-' + id); }
+function toolHome(id, instant) { const t = tray.tools[id]; tween(1, () => {}, null, 'tool-' + id); if (t.parent === tray.group) return; tray.group.attach(t); const p0 = t.position.clone(), q0 = t.quaternion.clone(), h = t.userData.home; if (instant) { t.position.copy(h.p); t.quaternion.copy(h.q); return; } tween(700, (k) => { t.position.lerpVectors(p0, h.p, k); t.quaternion.slerpQuaternions(q0, h.q, k); }, null, 'tool-' + id); }
+function allHome(instant) { const keep = instant ? [] : keepTools(); Object.keys(tray.tools).forEach(id => { if (!keep.includes(id)) toolHome(id, instant); }); }
+function skinPose(u) {
+  const pL = gsvCurve.getPointAt(u), nL = normalAt(pL), tL = gsvCurve.getTangentAt(u);
+  const p = body.localToWorld(pL.clone()), n = body.localToWorld(pL.clone().add(nL)).sub(p).normalize(), t = body.localToWorld(pL.clone().add(tL)).sub(p).normalize();
+  return { p, n, t };
+}
+function probePlace(u) {
+  const { p, n, t } = skinPose(u), q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), n.clone().negate());
+  const xNow = new THREE.Vector3(1, 0, 0).applyQuaternion(q), want = new THREE.Vector3().crossVectors(n, t).normalize();
+  q.premultiply(new THREE.Quaternion().setFromAxisAngle(n, Math.atan2(n.dot(xNow.clone().cross(want)), xNow.dot(want))));
+  return { p: p.clone().addScaledVector(n, 0.006), q };
+}
+function insertPlace(u, deg, depth, skinOff = 0) {
+  const { p, n, t } = skinPose(u), a = deg * Math.PI / 180, d = t.clone().negate().multiplyScalar(Math.cos(a)).addScaledVector(n, -Math.sin(a)).normalize();
+  return { p: p.clone().addScaledVector(n, skinOff + 0.004).addScaledVector(d, depth), q: new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(-1, 0, 0), d) };
+}
+function hoverPlace(u, up = 0.07, along = 0) { const { p, n, t } = skinPose(u); return { p: p.clone().addScaledVector(n, up).addScaledVector(t, along), q: new THREE.Quaternion() }; }
+function seqTool(n) {
+  if (n === '穿刺针') toolTo('needle', insertPlace(U_KNEE, 30, 0.012));
+  if (n === '导丝') toolTo('wire', hoverPlace(U_KNEE, 0.05, 0.08));
+  if (n === '鞘管') { toolHome('needle'); toolTo('sheath', insertPlace(U_KNEE, 20, 0.045)); }
+  if (n === '射频导管') { toolHome('wire'); toolTo('catheter', hoverPlace(U_KNEE, 0.03, 0.18)); setCatheter(U_KNEE - 0.05); }
+}
 function after3D(i) {
-  if (i === 2) { /* 体位已为仰卧 */ }
-  if (i === 4) setCatheter(U_KNEE - 0.08);
-  if (i === 5) { const u = 0.035; let k0 = U_KNEE - 0.08; tween(1200, (k) => setCatheter(k0 + (u - k0) * k)); }
-  if (i === 6) { halo.geometry.dispose(); halo.geometry = tubeAlong(0.02, U_KNEE + 0.02, 0.016); halo.visible = true; }
-  if (i === 7) { const r0 = patient.rotation.x; tween(600, (k) => patient.rotation.z = -0.12 * k); const segs = veinSegs.filter(s => s.userData.u1 > 0.03 && s.userData.u0 < U_KNEE); tween(3200, (k) => { segs.forEach((s, j) => { if (k > j / segs.length) { s.userData.abl = 1; paintVein(s); } }); setCatheter(0.035 + (U_KNEE - 0.035) * k); }, () => { catheter.visible = false; halo.visible = false; tween(600, (k) => patient.rotation.z = -0.12 * (1 - k)); }); }
-  if (i === 8) tribs.forEach(t => { t.userData.abl = 1; paintVein(t); });
-  if (i === 9) bandages.forEach((b, j) => setTimeout(() => b.visible = true, j * 140));
+  if (i === 1) { toolTo('pen', insertPlace(0.035, 70, -0.002)); setTimeout(() => toolHome('pen'), 1600); }
+  if (i === 3) toolTo('needle', insertPlace(U_KNEE, 30, 0.012));
+  if (i === 4) { setCatheter(U_KNEE - 0.05); setTimeout(() => toolHome('catheter'), 1500); }
+  if (i === 5) { const k0 = U_KNEE - 0.05; tween(1400, (k) => setCatheter(k0 + (U_TIP - k0) * k)); }
+  if (i === 6) { toolTo('syringe', insertPlace(0.3, 25, 0.01)); setTimeout(() => toolHome('syringe'), 2000); halo.geometry.dispose(); halo.geometry = tubeAlong(Math.max(0, U_TIP - 0.008), U_KNEE + 0.01, 0.011); halo.visible = true; }
+  if (i === 7) {
+    tween(600, (k) => patient.rotation.z = -0.12 * k); catTip.material.emissive.setHex(0xff5a00);
+    const segs = veinSegs.filter(s => s.userData.u1 > U_TIP && s.userData.u0 < U_KNEE);
+    tween(3600, (k) => { const u = U_TIP + (U_KNEE - U_TIP) * k; segs.forEach(s => { if (s.userData.u0 < u) { s.userData.abl = 1; paintVein(s); } }); setCatheter(u); }, () => { hideCatheter(); catTip.material.emissive.setHex(0); halo.visible = false; tween(600, (k) => patient.rotation.z = -0.12 * (1 - k)); });
+  }
+  if (i === 8) { tribs.forEach(t => { t.userData.abl = 1; paintVein(t); }); toolHome('sheath'); }
+  if (i === 9) { toolTo('bandage', hoverPlace(U_ANKLE, 0.05)); bandages.forEach((b, j) => setTimeout(() => b.visible = true, 400 + j * 140)); setTimeout(() => toolHome('bandage'), 2400); }
 }
 function restoreSurg3D() {
-  const d = S.surg.done; [...veinSegs, ...tribs].forEach(s => { s.userData.abl = 0; setFill(s, 1); }); catheter.visible = halo.visible = false; bandages.forEach(b => b.visible = false);
-  if (d.includes(4) && !d.includes(7)) setCatheter(d.includes(5) ? 0.035 : U_KNEE - 0.08);
-  if (d.includes(6) && !d.includes(7)) { halo.geometry.dispose(); halo.geometry = tubeAlong(0.02, U_KNEE + 0.02, 0.016); halo.visible = true; }
-  if (d.includes(7)) veinSegs.forEach(s => { if (s.userData.u1 > 0.03 && s.userData.u0 < U_KNEE) { s.userData.abl = 1; paintVein(s); } });
+  const d = S.surg.done; [...veinSegs, ...tribs].forEach(s => { s.userData.abl = 0; setFill(s, 1); }); hideCatheter(); halo.visible = false; bandages.forEach(b => b.visible = false);
+  if (d.includes(4) && !d.includes(7)) setCatheter(d.includes(5) ? U_TIP : U_KNEE - 0.05);
+  if (d.includes(6) && !d.includes(7)) { halo.geometry.dispose(); halo.geometry = tubeAlong(Math.max(0, U_TIP - 0.008), U_KNEE + 0.01, 0.011); halo.visible = true; }
+  if (d.includes(7)) veinSegs.forEach(s => { if (s.userData.u1 > U_TIP && s.userData.u0 < U_KNEE) { s.userData.abl = 1; paintVein(s); } });
   if (d.includes(8)) tribs.forEach(t => { t.userData.abl = 1; paintVein(t); });
   if (d.includes(9)) bandages.forEach(b => b.visible = true);
+  if (keepTools().includes('sheath')) setTimeout(() => toolTo('sheath', insertPlace(U_KNEE, 20, 0.045), 10), 950);
 }
 function surgAnswer(i) {
   const G = S.surg, st = STEPS[G.cur];
@@ -624,12 +710,19 @@ function surgAnswer(i) {
     if (i === st.ok) completeStep(st.fb); else { G.fb = '✗ ' + (G.cur === 5 ? '头端太靠近或进入股静脉 → 内热诱导血栓（EHIT）/ DVT 风险。' : '不正确，请再选择。'); if (G.cur === 5 && i >= 0) setCatheter(st.tip[i]); render(); }
   }
 }
+function seqPick(n) {
+  const G = S.surg, st = STEPS[4]; if (G.cur !== 4 || G.sub.complete) return;
+  if (n === st.items[G.seqK]) { G.seqK++; seqTool(n); notify('已拾取：' + n, 'ok'); if (G.seqK >= 4) completeStep(st.fb); else render(); }
+  else { G.seqErr++; log('seq_err', { n }); notify(st.items.includes(n) ? '顺序错误：' + n + ' 不是下一件器械' : n + ' 不属于本术式', 'warn'); }
+}
+const TOOL_NAME = { needle: '穿刺针', wire: '导丝', sheath: '鞘管', catheter: '射频导管', hemostat: '止血钳', stripper: '剥脱器' };
 const ANAT = [['gsv', '大隐静脉'], ['cfv', '股总静脉'], ['sfj', '隐股交界（SFJ）'], ['fascia', '隐筋膜']];
 function vSurg() {
   const G = S.surg;
   title('腔内热消融术（射频 RFA）流程认知', '左侧按顺序选择下一步（顺序错误先警示一次，再错播放后果），右侧完成该步操作。');
   stepOrder.forEach(([n, i], j) => { const d = G.done.includes(i); btn('sp' + i, 320, 106 + j * 70, 430, 62, (d ? (i + 1) + '. ' : '') + n + (d ? ' ✓' : ''), () => surgPick(i), { size: 22, left: true, st: d ? 'ok' : G.cur === i ? 'primary' : 'ghost', dis: d }); });
   text('顺序错误 ' + G.orderErr + ' 处', 320, 884, { size: 20, color: G.orderErr ? C.bad : C.sub });
+  btn('xray', 520, 870, 230, 46, G.xray ? '皮肤：透明' : '皮肤：实体', () => { G.xray = !G.xray; setSkin(legL, G.xray ? 'xray' : 'solid'); }, { size: 20, st: G.xray ? 'sel' : 'ghost' });
   const X = 780, Wd = 800;
   if (G.fb) { card(X, 830, Wd, 80, G.fb.startsWith('✓') ? C.okSoft : G.fb.startsWith('后果') ? C.badSoft : '#fff1d6'); text(G.fb, X + 18, 842, { size: 21, maxW: Wd - 36, lines: 2, lh: 30, color: G.fb.startsWith('✓') ? C.ok : G.fb.startsWith('后果') ? C.bad : C.warn }); }
   if (G.cur < 0) { text('从左侧选择第一步开始。患者已仰卧在手术台上（左下肢），可转身查看 3D 模型。', X, 120, { size: 24, color: C.sub, maxW: Wd }); return; }
@@ -649,10 +742,8 @@ function vSurg() {
   if (st.task === 'spot') { text(st.q + '。也可点下方按钮：', X, y, { size: 23, maxW: Wd }); y += 80; SURG_SPOTS.forEach(([id, lb], i) => btn('ss' + id, X, y + i * 76, 520, 66, lb, () => surgSpot(id), { size: 24, left: true })); return; }
   if (st.task === 'seq') {
     text(`从器械盘中按顺序拾取器械（已完成 ${G.seqK}/4，错误 ${G.seqErr} 次）`, X, y, { size: 23, maxW: Wd }); y += 50;
-    seeded([...st.items, ...st.distract], 5).forEach(([n], j) => btn('sq' + j, X + (j % 3) * 266, y + Math.floor(j / 3) * 110, 252, 96, n, () => {
-      if (n === st.items[G.seqK]) { G.seqK++; notify('已拾取：' + n, 'ok'); if (G.seqK >= 4) completeStep(st.fb); else render(); }
-      else { G.seqErr++; log('seq_err', { n }); notify(st.items.includes(n) ? '顺序错误：' + n + ' 不是下一件器械' : n + ' 不属于本术式', 'warn'); }
-    }, { size: 26, st: st.items.indexOf(n) > -1 && st.items.indexOf(n) < G.seqK ? 'ok' : 'ghost', dis: st.items.indexOf(n) > -1 && st.items.indexOf(n) < G.seqK }));
+    seeded([...st.items, ...st.distract], 5).forEach(([n], j) => btn('sq' + j, X + (j % 3) * 266, y + Math.floor(j / 3) * 110, 252, 96, n, () => seqPick(n), { size: 26, st: st.items.indexOf(n) > -1 && st.items.indexOf(n) < G.seqK ? 'ok' : 'ghost', dis: st.items.indexOf(n) > -1 && st.items.indexOf(n) < G.seqK }));
+    text('也可以直接点击器械盘（右侧 Mayo 台）上的 3D 器械。', X, y + 236, { size: 21, color: C.sub, maxW: Wd });
     return;
   }
   text(st.q, X, y, { size: 24, maxW: Wd, lh: 34 }); y += 34 * measureLines(st.q, 24, Wd) + 16;
@@ -726,7 +817,7 @@ function copyData() {
 
 // ================= 交互 =================
 const ray = new THREE.Raycaster();
-function pickables() { return [panel, ...hotspots.filter(h => h.visible)]; }
+function pickables() { const a = [panel, ...hotspots.filter(h => h.visible)]; if (tray.group.visible) a.push(...toolPick); if (showcase.visible) a.push(...legA.pick.filter(m => m.visible && !(m.userData.key === 'skin' && A.skin !== 'solid'))); return a; }
 function handleHit(h, click) {
   if (!h) { if (hoverId) { hoverId = null; render(); } showTip(null); return; }
   if (h.object === panel) {
@@ -737,8 +828,11 @@ function handleHit(h, click) {
     if (click && found) { found.fn(); render(); }
   } else {
     if (hoverId) { hoverId = null; render(); }
+    const d = h.object.userData;
+    if (d.toolRoot) { const tr = d.toolRoot.userData; showTip(d.toolRoot, tr.label); if (click && TOOL_NAME[tr.tool]) seqPick(TOOL_NAME[tr.tool]); return; }
+    if (showcase.visible && d.key) { showTip(h.object, INFO[d.key]?.[0] || d.key); tipSprite.position.copy(h.point).add(new THREE.Vector3(0, 0.05, 0)); if (click) { A.sel = d.key; applyAnatomy(); render(); } return; }
     showTip(h.object);
-    if (click) { const d = h.object.userData; if (d.kind === 'exam') examine(d.hs); else surgSpot(d.hs); }
+    if (click) { if (d.kind === 'exam') examine(d.hs); else surgSpot(d.hs); }
   }
 }
 const mouse = new THREE.Vector2(); let drag = null;
@@ -844,6 +938,6 @@ $('closeData').onclick = (e) => { e.preventDefault(); $('dataDlg').close(); };
 if (navigator.xr) navigator.xr.isSessionSupported('immersive-ar').then(ok => { if (ok) $('btnAR').classList.add('primary'); }).catch(() => {});
 document.fonts?.ready?.then(() => render());
 render(); updateOverlay();
-window.__S = S; window.__go = go; window.__ask = ask; window.__totals = totals;
+window.__S = S; window.__go = go;  window.__ask = ask; window.__totals = totals;
 window.__click = (id) => { const h = hits.find(b => b.id === id); if (!h) return false; h.fn(); render(); return true; };
 window.__ids = () => hits.map(h => h.id);
