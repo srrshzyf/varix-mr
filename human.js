@@ -1,7 +1,13 @@
 // MakeHuman（CC0）基础网格生成的病人模型加载器：骨骼世界轴对齐，便于程序化驱动
 import * as THREE from './three.module.min.js';
+// 二进制数据：优先 .bin，托管环境不支持时回退到 base64 文本（.b64.txt）
+export async function fetchBin(url) {
+  try { const r = await fetch(url); if (r.ok) return await r.arrayBuffer(); } catch (e) {}
+  const t = await (await fetch(url.replace(/\.bin$/, '.b64.txt'))).text(), s = atob(t.trim()), u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u.buffer;
+}
 export async function loadHuman(base = './', mats = {}) {
-  const [meta, bin] = await Promise.all([fetch(base + 'patient.json').then(r => r.json()), fetch(base + 'patient.bin').then(r => r.arrayBuffer())]);
+  const [meta, bin] = await Promise.all([fetch(base + 'patient.json').then(r => r.json()), fetchBin(base + 'patient.bin')]);
   const A = (k, T) => { const [o, l] = meta.off[k]; return new T(bin.slice(o, o + l)); };
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(A('pos', Float32Array), 3));

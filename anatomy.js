@@ -1,6 +1,7 @@
 // 程序化下肢解剖模型（教学示意级，比例按成人下肢，单位：米；足底 y=0，左腿中心 x=+0.1）
 // 层：skin 皮肤 / sup 浅静脉 / deep 深静脉 / art 动脉 / nerve 神经 / bone 骨骼 / fascia 隐筋膜
 import * as THREE from './three.module.min.js';
+import { fetchBin } from './human.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const g = (x, m, s) => Math.exp(-((x - m) ** 2) / (2 * s * s));
@@ -8,7 +9,7 @@ const g = (x, m, s) => Math.exp(-((x - m) ** 2) / (2 * s * s));
 let L = null, LB = null;
 export async function initLegData(base = './') {
   if (L) return L;
-  const [j, b] = await Promise.all([fetch(base + 'legs.json').then(r => r.json()), fetch(base + 'legs.bin').then(r => r.arrayBuffer())]);
+  const [j, b] = await Promise.all([fetch(base + 'legs.json').then(r => r.json()), fetchBin(base + 'legs.bin')]);
   L = j; LB = b; return L;
 }
 export const legK = () => L.k;
