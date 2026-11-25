@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>静脉曲张 MR 训练</title>
+<style>
+/* VOICE: 临床、安静、可信
+   IDEA: 一间诊室里悬浮的病历平板 + 站在面前的患者
+   PICTURE: 全屏 3D 场景本身就是画面，网页层只留顶栏和问诊输入
+   COLOUR and TYPE: 白底墨色，静脉蓝作强调，警示红只给关键项
+   LAYOUT: 顶栏一行，底部输入条，其余全部交给 3D */
+:root{color-scheme:light;--ink:#14202b;--sub:#566676;--blue:#2a56c6;--line:#d5dde4}
+*{box-sizing:border-box;min-width:0}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;overflow:hidden;background:#e9edf1;color:var(--ink);font:16px/1.5 "PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif}
+#stage{position:fixed;inset:0}
+#stage canvas{display:block;touch-action:none}
+.top{position:fixed;top:0;left:0;right:0;display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 14px;background:rgba(255,255,255,.88);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);z-index:5}
+.top h1{font-size:17px;margin:0 auto 0 0;font-weight:700}
+.chip{font-size:13px;padding:4px 10px;border-radius:99px;background:#eef2f6;color:var(--sub);white-space:nowrap}
+.chip.ok{background:#ddf2e8;color:#1d7f5a}.chip.warn{background:#fff1d6;color:#8a5200}
+button{font:inherit;min-height:40px;padding:0 14px;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer}
+button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+button:focus-visible,input:focus-visible{outline:3px solid #9db6f2;outline-offset:1px}
+#chatbar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);width:min(760px,calc(100% - 24px));display:flex;gap:8px;padding:8px;background:rgba(255,255,255,.95);border:1px solid var(--line);border-radius:14px;z-index:5}
+#chatbar input{flex:1;font:inherit;font-size:16px;min-height:44px;padding:0 12px;border:1px solid var(--line);border-radius:10px}
+#mic.on{background:#c0392b;border-color:#c0392b;color:#fff}
+.hint{position:fixed;left:14px;bottom:14px;font-size:13px;color:var(--sub);z-index:4;max-width:280px}
+.toast{position:fixed;top:64px;left:50%;transform:translateX(-50%);padding:8px 16px;border-radius:10px;background:#e4ebfb;color:var(--blue);font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:6;max-width:90vw}
+.toast.show{opacity:1}.toast.bad{background:#fbe3e0;color:#c0392b}.toast.warn{background:#fff1d6;color:#8a5200}.toast.ok{background:#ddf2e8;color:#1d7f5a}
+dialog{border:1px solid var(--line);border-radius:16px;padding:22px;width:min(560px,94vw);color:var(--ink)}
+dialog h2{margin:0 0 8px;font-size:20px}
+dialog p{color:var(--sub);font-size:14px;margin:6px 0 14px}
+dialog label{display:block;font-size:14px;margin:10px 0 4px}
+dialog input,dialog textarea{width:100%;font:inherit;font-size:16px;min-height:42px;padding:6px 10px;border:1px solid var(--line);border-radius:8px}
+dialog textarea{height:240px;font-size:12px}
+.row{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+@media (max-width:700px){.hint{display:none}.top h1{font-size:15px;width:100%}}
+@media (prefers-reduced-motion:reduce){.toast{transition:none}}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="top">
+  <h1>下肢静脉曲张 · VR+AI 实习训练原型</h1>
+  <span id="modeChip" class="chip">对话：检测中</span>
+  <button id="btnAR">进入 MR（透视）</button>
+  <button id="btnVR">进入 VR</button>
+  <button id="btnSet">设置</button>
+</div>
+<div id="toast" class="toast" role="status"></div>
+<div id="chatbar" hidden>
+  <input id="q" placeholder="向患者提问，例如：腿上的青筋有多久了？" autocomplete="off" aria-label="向患者提问">
+  <button id="mic" hidden>语音</button>
+  <button id="send" class="primary">发送</button>
+</div>
+<div class="hint">按住拖动转动视角，滚轮缩放；点击面板按钮或患者身上的青色圆点交互。</div>
+
+<dialog id="setDlg">
+  <h2>对话接口设置</h2>
+  <p>在 claude.ai 中打开时，患者由 Claude 扮演，无需任何设置。独立部署时，可填写兼容 OpenAI chat/completions 格式的接口（需支持浏览器跨域）。不填写则使用预设脚本对话。密钥只保存在本浏览器。</p>
+  <div id="apiBox">
+    <label for="apiUrl">接口地址</label><input id="apiUrl" placeholder="https://…/v1/chat/completions">
+    <label for="apiModel">模型名称</label><input id="apiModel" placeholder="例如本校部署的模型名">
+    <label for="apiKey">密钥</label><input id="apiKey" type="password" autocomplete="off">
+  </div>
+  <p id="setMsg"></p>
+  <div class="row"><button id="closeSet">取消</button><button id="saveSet" class="primary">保存</button></div>
+</dialog>
+<dialog id="dataDlg">
+  <h2>训练数据（JSON）</h2>
+  <p>浏览器不允许直接复制时，请手动全选下面的文本复制。</p>
+  <textarea id="dataOut" readonly></textarea>
+  <div class="row"><button id="closeData">关闭</button></div>
+</dialog>
+<script type="module" src="app.js"></script>
+</body>
+</html>
