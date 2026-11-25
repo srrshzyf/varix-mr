@@ -47,17 +47,61 @@ function sheath() {
   const sc = new THREE.Group(); sc.position.set(0.205, 0.06, 0.04); sc.add(new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.008, 0.008), std(0x2f78c8))); const handle = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.016, 0.004), std(0xe8eef4)); handle.position.y = 0.01; sc.add(handle); g.add(sc);
   return g;
 }
+// 射频消融导管（教学示意，参照 7F、7 cm 加热段节段式导管的一般外观；不含任何厂商标识）
 function rfCatheter() {
-  const g = new THREE.Group(), body = std(0xf1f3f5, { roughness: 0.35 }), coil = std(0xc8803c, { metalness: 0.6, roughness: 0.3 });
-  g.add(at(cylX(0.0011, 0.0013, 0.004, body, 12), 0.002));
-  g.add(at(cylX(0.00135, 0.00135, 0.07, coil, 14), 0.004 + 0.035));
-  for (let i = 0; i < 14; i++) g.add(at(cylX(0.00145, 0.00145, 0.0012, std(0x9a5a20, { metalness: 0.5 }), 10), 0.008 + i * 0.0048));
-  const pts = [V(0.074, 0, 0), V(0.25, 0, 0)]; for (let k = 0; k <= 120; k++) { const a = k / 120 * Math.PI * 3.2; pts.push(V(0.25 + Math.sin(a) * 0.08, 0.002 * k / 120, -0.08 + Math.cos(a) * 0.08)); }
-  g.add(tube(pts, 0.0013, body, 300));
-  for (let i = 1; i <= 3; i++) g.add(at(cylX(0.0015, 0.0015, 0.0015, std(0x222222), 10), 0.074 + i * 0.045));
-  const end = pts[pts.length - 1]; const handle = cylX(0.005, 0.007, 0.06, std(0x3b4b5c)); handle.position.copy(end).add(V(0.03, 0, 0)); g.add(handle);
-  g.add(tube([end.clone().add(V(0.06, 0, 0)), end.clone().add(V(0.1, 0.01, 0.03)), end.clone().add(V(0.14, 0.0, 0.08))], 0.0025, std(0x3b4b5c), 20));
+  const g = new THREE.Group(), R = 0.00117, shaftM = std(0xeef1f4, { roughness: 0.32 }), elem = std(0xb8bec6, { metalness: 0.85, roughness: 0.22 }), ink = std(0x1c1f22, { roughness: 0.5 });
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(R, 14, 10), shaftM); tip.scale.x = 1.3; g.add(at(tip, 0.0012));
+  g.add(at(cylX(R, R, 0.07, elem, 16), 0.0025 + 0.035));                   // 7 cm 加热段（金属线圈）
+  const hel = []; for (let k = 0; k <= 700; k++) { const x = 0.0025 + 0.07 * k / 700, a = k / 700 * Math.PI * 2 * 70; hel.push(V(x, Math.cos(a) * R * 1.02, Math.sin(a) * R * 1.02)); }
+  g.add(tube(hel, 0.00018, std(0x7d848c, { metalness: 0.8, roughness: 0.3 }), 1400));
+  // 导管体：前 45 cm 伸直，其余盘绕；每 6.5 cm 一个黑色刻度，带宽刻度为“鞘管标记”
+  const pts = [V(0.0725, 0, 0), V(0.3, 0, 0)];
+  for (let k = 0; k <= 160; k++) { const a = k / 160 * Math.PI * 3.4; pts.push(V(0.3 + Math.sin(a) * 0.075, 0.0025 * k / 160, -0.075 + Math.cos(a) * 0.075)); }
+  const cv = new THREE.CatmullRomCurve3(pts), L = cv.getLength();
+  g.add(new THREE.Mesh(new THREE.TubeGeometry(cv, 420, R, 10), shaftM));
+  for (let d = 0.065; d < 0.6; d += 0.065) { const u = (d) / L; if (u >= 1) break; const p = cv.getPointAt(u), t = cv.getTangentAt(u); const band = new THREE.Mesh(new THREE.CylinderGeometry(R * 1.08, R * 1.08, d > 0.2 && d < 0.27 ? 0.006 : 0.0018, 12), ink); band.position.copy(p); band.quaternion.setFromUnitVectors(V(0, 1, 0), t); g.add(band); }
+  const end = pts[pts.length - 1];
+  const hub = new THREE.Group(); hub.position.copy(end).add(V(0.012, 0, 0)); g.add(hub);
+  hub.add(at(cylX(R * 1.3, 0.004, 0.02, std(0xdfe5ea, { roughness: 0.3 })), 0.0));
+  hub.add(at(cylX(0.0045, 0.0045, 0.03, std(0x5c6670, { roughness: 0.4 })), 0.024));
+  const luer = cylX(0.0022, 0.003, 0.025, std(0xe8f0f6, { transparent: true, opacity: 0.85 })); luer.position.set(0.03, 0.012, 0.0); luer.rotation.z = -Math.PI / 2 + 0.6; hub.add(luer);
+  hub.add(tube([V(0.04, 0, 0), V(0.08, 0, 0.01), V(0.12, -0.005, 0.06), V(0.16, -0.01, 0.12)], 0.002, std(0x6d7780, { roughness: 0.5 }), 30)); // 连接发生器的电缆
   return g;
+}
+// 静脉钩（点式剥脱用）
+function hook() {
+  const g = new THREE.Group();
+  g.add(tube([V(0, 0.0015, 0), V(0.0012, 0.0006, 0), V(0.003, 0, 0), V(0.03, 0, 0)], 0.00045, steel, 20));
+  g.add(at(cylX(0.0007, 0.0007, 0.04, steel, 8), 0.05));
+  const h = at(cylX(0.003, 0.0035, 0.09, std(0x9aa3ab, { metalness: 0.6, roughness: 0.45 }), 12), 0.115); g.add(h);
+  for (let i = 0; i < 10; i++) g.add(at(cylX(0.0037, 0.0037, 0.0015, steel, 12), 0.08 + i * 0.007));
+  return g;
+}
+// 射频发生器（示意）：显示温度、计时、功率
+export function buildGenerator() {
+  const g = new THREE.Group(), shell = std(0xe9edf0, { roughness: 0.4 }), dark = std(0x2b3036, { roughness: 0.5 });
+  const box = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.13, 0.3), shell); box.position.y = 0.065; g.add(box);
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 256; const tx = new THREE.CanvasTexture(cv); tx.colorSpace = THREE.SRGBColorSpace;
+  const scr = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.1), new THREE.MeshBasicMaterial({ map: tx })); scr.position.set(-0.03, 0.068, 0.1535); g.add(scr);
+  const bz = new THREE.Mesh(new THREE.BoxGeometry(0.215, 0.112, 0.004), dark); bz.position.set(-0.03, 0.068, 0.149); g.add(bz);
+  for (let i = 0; i < 3; i++) { const b = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.006, 16), std([0x2fbf71, 0xe8a33d, 0xd9534f][i])); b.rotation.x = Math.PI / 2; b.position.set(0.1, 0.1 - i * 0.03, 0.152); g.add(b); }
+  const port = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.01, 16), dark); port.rotation.x = Math.PI / 2; port.position.set(0.1, 0.022, 0.152); g.add(port);
+  // 推车
+  const cart = std(0xb9c1c9, { metalness: 0.4, roughness: 0.4 });
+  const top = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.02, 0.38), cart); top.position.y = -0.01; g.add(top);
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.78, 12), cart); pole.position.y = -0.41; g.add(pole);
+  const base = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.03, 0.42), cart); base.position.y = -0.8; g.add(base);
+  function show(o = {}) {
+    const c = cv.getContext('2d'); c.fillStyle = '#0d1a22'; c.fillRect(0, 0, 512, 256);
+    c.fillStyle = '#7fb8d6'; c.font = '24px sans-serif'; c.fillText('射频发生器（示意）', 18, 34); c.fillText(o.state || '待机', 330, 34);
+    const big = (lab, val, unit, x, col) => { c.fillStyle = '#9fb3c0'; c.font = '22px sans-serif'; c.fillText(lab, x, 84); c.fillStyle = col; c.font = 'bold 64px sans-serif'; c.fillText(val, x, 160); c.font = '24px sans-serif'; c.fillText(unit, x, 196); };
+    big('温度', o.temp != null ? String(o.temp) : '--', '℃', 18, o.temp >= 115 ? '#ff9a3c' : '#e8f1f6');
+    big('时间', o.time != null ? String(o.time) : '--', '秒', 190, '#e8f1f6');
+    big('功率', o.power != null ? String(o.power) : '--', 'W', 350, '#e8f1f6');
+    c.fillStyle = '#9fb3c0'; c.font = '22px sans-serif'; c.fillText(o.seg ? `第 ${o.seg} 段${o.cycle ? ' · 第 ' + o.cycle + ' 次' : ''}` : '', 18, 238);
+    tx.needsUpdate = true;
+  }
+  show(); return { group: g, show };
 }
 function syringe() {
   const g = new THREE.Group();
@@ -89,9 +133,9 @@ function hemostat() {
 function stripper() { const g = new THREE.Group(); g.add(at(new THREE.Mesh(new THREE.SphereGeometry(0.005, 12, 10), steel), 0.005)); g.add(at(cylX(0.0015, 0.0015, 0.3, steel, 8), 0.155)); g.add(at(cylX(0.004, 0.004, 0.04, std(0x444444)), 0.32)); return g; }
 
 export const TOOL_DEFS = [
-  ['probe', '超声线阵探头', probe], ['pen', '标记笔', pen], ['needle', '穿刺针（21G）', () => needle()], ['wire', '导丝（J 形头）', guidewire],
-  ['sheath', '血管鞘（7F，带侧管）', sheath], ['catheter', '射频消融导管（7 cm 加热段）', rfCatheter], ['syringe', '肿胀麻醉注射器（20 ml）', syringe],
-  ['bandage', '弹力绷带', bandage], ['hemostat', '止血钳', hemostat], ['stripper', '剥脱器', stripper]
+  ['probe', '超声线阵探头', probe], ['pen', '标记笔', pen], ['needle', '微穿刺针（21G）', () => needle()], ['wire', '导丝（0.018 英寸）', guidewire],
+  ['sheath', '血管鞘（7F，带侧管）', sheath], ['catheter', '射频消融导管（7F，7 cm 加热段）', rfCatheter], ['syringe', '肿胀麻醉注射器（20 ml，22G 长针）', syringe],
+  ['bandage', '弹力绷带', bandage], ['hook', '静脉钩（点式剥脱）', hook], ['hemostat', '止血钳', hemostat], ['stripper', '剥脱器', stripper]
 ];
 // 器械盘（Mayo 台）：各器械在盘中的摆放位置
 export function buildTray() {
@@ -104,7 +148,7 @@ export function buildTray() {
   const foot = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.02, 0.4), trayM); foot.position.set(0.2, -0.9, 0.12); grp.add(foot);
   const place = { probe: [-0.17, 0.012, -0.08, [0, 0, -Math.PI / 2]], pen: [-0.2, 0.012, 0.12, [0, -0.3, 0]], needle: [-0.08, 0.008, 0.14, [0, 0.2, 0]], wire: [0.15, 0.008, -0.07, [0, 0, 0]],
     sheath: [-0.04, 0.012, 0.06, [0, 0.1, 0]], catheter: [-0.02, 0.008, -0.12, [0, 0.4, 0]], syringe: [0.02, 0.02, 0.13, [0, 0.15, 0]], bandage: [0.18, 0.034, 0.12, [0, 0, 0]],
-    hemostat: [-0.2, 0.008, -0.02, [0, 1.2, 0]], stripper: [-0.22, 0.008, 0.16, [0, -0.08, 0]] };
+    hemostat: [-0.2, 0.008, -0.02, [0, 1.2, 0]], stripper: [-0.22, 0.008, 0.16, [0, -0.08, 0]], hook: [0.1, 0.008, 0.16, [0, 0.3, 0]] };
   for (const [id, label, fn] of TOOL_DEFS) {
     const t = fn(); const [x, y, z, r] = place[id]; t.position.set(x, y, z); t.rotation.set(...r);
     t.userData = { tool: id, label, home: { p: t.position.clone(), q: t.quaternion.clone() } };

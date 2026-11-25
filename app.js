@@ -1,6 +1,7 @@
 import * as THREE from './three.module.min.js';
-import { buildLeg, setSkin, setLayer, surf, inner, normalAt, INFO } from './anatomy.js';
-import { buildTray, TOOL_DEFS } from './instruments.js';
+import { buildLeg, setSkin, setLayer, surf, inner, normalAt, INFO, initLegData, legK } from './anatomy.js';
+import { loadHuman } from './human.js';
+import { buildTray, TOOL_DEFS, buildGenerator } from './instruments.js';
 import { buildClinic, SPOTS, BED } from './clinic.js';
 import { systemPrompt, QUESTIONS, KEYWORDS, EXAM, TESTS, ORDERS, SEGS, US_Q, DX, TALK, STEPS, RUBRIC } from './data.js';
 
@@ -185,49 +186,88 @@ const room = new THREE.Group(); scene.add(room);
   wall.position.set(0, 2, -3.2); room.add(wall);
 }
 
-// ----- 患者模型（下肢为程序化解剖模型，见 anatomy.js） -----
-const SKIN = 0xe7c3a5;
+// ----- 患者模型：MakeHuman（CC0）人体网格生成的 54 岁亚洲女性，骨骼驱动；暴露下肢时换成同形的解剖腿（anatomy.js） -----
+await initLegData('./');
+const KLEG = legK();                                   // 解剖坐标 = 真实米制 × KLEG
 const mat = (c, o = {}) => new THREE.MeshLambertMaterial({ color: c, ...o });
-const patient = new THREE.Group(); scene.add(patient);
+const TL = new THREE.TextureLoader();
+const txl = (u, srgb = true) => { const t = TL.load(u); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t; };
+function clothCut(m, code) { m.onBeforeCompile = (sh) => { sh.vertexShader = 'varying vec3 vR;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvR = position;'); sh.fragmentShader = 'varying vec3 vR;\n' + sh.fragmentShader.replace('void main() {', 'void main() {\n' + code); }; return m; }
+const fab = txl('fabric.png', false); fab.wrapS = fab.wrapT = THREE.RepeatWrapping; fab.repeat.set(30, 30);
+const skinMat = new THREE.MeshStandardMaterial({ map: txl('skin_base.jpg'), bumpMap: txl('skin_bump.jpg', false), bumpScale: 0.6, roughness: 0.62 });
+const HM = {
+  body: skinMat, legs: skinMat,
+  eyes: new THREE.MeshStandardMaterial({ map: txl('eye.jpg'), roughness: 0.15 }),
+  teeth: new THREE.MeshStandardMaterial({ color: 0xeeeae0, roughness: 0.3 }), tongue: new THREE.MeshStandardMaterial({ color: 0xb0605c, roughness: 0.6 }),
+  hair: new THREE.MeshStandardMaterial({ map: txl('hair.png'), roughness: 0.78, side: THREE.DoubleSide }),
+  top: new THREE.MeshStandardMaterial({ color: 0x9fb4c8, bumpMap: fab, bumpScale: 1, roughness: 0.85 }),
+  trousers: clothCut(new THREE.MeshStandardMaterial({ color: 0x3b3f4a, bumpMap: fab, bumpScale: 1, roughness: 0.9 }), 'if(vR.y>0.905) discard;'),
+  briefs: clothCut(new THREE.MeshStandardMaterial({ color: 0xe8dcd0, roughness: 0.9, side: THREE.DoubleSide }), 'float ax=abs(vR.x); float cr=0.705+0.75*clamp(ax-0.02,0.0,0.2); if(vR.y>0.878||vR.y<cr) discard;'),
+  shoes: new THREE.MeshStandardMaterial({ color: 0x2a2522, roughness: 0.45 })
+};
+const HUM = await loadHuman('./', HM);
+const patient = new THREE.Group(); patient.scale.setScalar(1 / KLEG); scene.add(patient);
 const body = new THREE.Group(); patient.add(body);
-function capsule(r, len, c, x, y, z, parent = body) { const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 6, 16), mat(c)); m.position.set(x, y, z); parent.add(m); return m; }
-const shoulders = [1, -1].map(sx => { const sh = new THREE.Group(); sh.position.set(0.235 * sx, 1.39, 0); sh.rotation.z = 0.08 * sx; body.add(sh); capsule(0.038, 0.46, SKIN, 0, -0.26, 0, sh); return sh; });
-const legL = buildLeg({ side: 1, varicose: true, skinColor: SKIN }), legRt = buildLeg({ side: -1, varicose: false, skinColor: SKIN });
-const hipR = new THREE.Group(); hipR.position.set(-0.1, 0.92, 0); hipR.rotation.z = -0.11; legRt.group.position.set(0.1, -0.92, 0); hipR.add(legRt.group);
-const hipL = new THREE.Group(); hipL.position.set(0.1, 0.92, 0); legL.group.position.set(-0.1, -0.92, 0); hipL.add(legL.group); body.add(hipL, hipR);
-const shorts = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.205, 0.17, 28), mat(0x5d6b7a)); shorts.position.y = 0.935; body.add(shorts);
-const torso = capsule(0.155, 0.36, 0x8fb8c8, 0, 1.22, 0); torso.scale.set(1.05, 1, 0.7);
-capsule(0.04, 0.05, SKIN, 0, 1.5, 0);
-const head = new THREE.Mesh(new THREE.SphereGeometry(0.1, 24, 16), mat(SKIN)); head.position.set(0, 1.62, 0); body.add(head);
-const hair = new THREE.Mesh(new THREE.SphereGeometry(0.105, 24, 12, 0, Math.PI * 2, 0, 1.7), mat(0x3b3430)); hair.position.set(0, 1.635, -0.01); hair.rotation.x = -0.35; body.add(hair);
-// 穿着衣物时的可动关节腿（走路、坐下用）；暴露下肢时换成解剖腿
-const pants = new THREE.Group(); body.add(pants);
-const cHip = [], cKnee = [];
-for (const sx of [1, -1]) {
-  const hp = new THREE.Group(); hp.position.set(0.1 * sx, 0.92, 0); pants.add(hp);
-  capsule(0.088, 0.3, 0x4a5562, 0, -0.2, 0, hp);
-  const kn = new THREE.Group(); kn.position.set(0, -0.42, 0); hp.add(kn);
-  capsule(0.068, 0.34, 0x4a5562, 0, -0.22, 0, kn);
-  const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.075, 0.25), mat(0x2e3238)); shoe.position.set(0, -0.465, 0.055); kn.add(shoe);
-  cHip.push(hp); cKnee.push(kn);
-}
+HUM.mesh.scale.setScalar(KLEG); body.add(HUM.mesh);
+const BN = HUM.bones, part = (n) => HM[n];
+const head = BN.head;
+const legL = buildLeg({ side: 1, varicose: true }), legRt = buildLeg({ side: -1, varicose: false });
+const hipPt = (side) => { const b = BN[side > 0 ? 'upperleg01.L' : 'upperleg01.R']; const p = new THREE.Vector3(); let o = b; const acc = new THREE.Vector3(); while (o && o.isBone) { acc.add(o.position); o = o.parent; } return acc.multiplyScalar(KLEG); };
+const hipR = new THREE.Group(); hipR.position.copy(hipPt(-1)); legRt.group.position.copy(hipPt(-1)).negate(); hipR.add(legRt.group);
+const hipL = new THREE.Group(); hipL.position.copy(hipPt(1)); legL.group.position.copy(hipPt(1)).negate(); hipL.add(legL.group); body.add(hipL, hipR);
+const shorts = { set visible(v) { HM.briefs.visible = v; } };
 let pantsOn = true;
 function setPants(v) { pantsOn = v; updateLegs(); }
-function updateLegs() { pants.visible = pantsOn; hipL.visible = !pantsOn; hipR.visible = !pantsOn && S.mod !== 'surg'; }
-// 关节姿态：hip/knee/sh 为 [左, 右]，y 为身体下沉量
-const J_STAND = { hip: [0, 0], knee: [0, 0], sh: [0, 0], y: 0 }, J_SIT = { hip: [-1.52, -1.52], knee: [1.5, 1.5], sh: [-0.55, -0.55], y: -0.38 };
-const J = { hip: [0, 0], knee: [0, 0], sh: [0, 0], y: 0 };
+function updateLegs() {
+  HM.trousers.visible = HM.shoes.visible = HM.legs.visible = pantsOn; HM.briefs.visible = !pantsOn && S.mod !== 'surg';
+  hipL.visible = !pantsOn; hipR.visible = !pantsOn && S.mod !== 'surg';
+}
+// 身体（全身）与解剖腿共用同一贴图；解剖腿显示时隐藏人体腿部网格（legs 与 body 共用材质，故单独复制一份）
+HM.legs = skinMat.clone(); HUM.mesh.material[HUM.parts.legs] = HM.legs;
+// 关节姿态：hip/knee/sh/el 为 [左, 右]，y 为身体下沉量（解剖坐标）
+const J_STAND = { hip: [0, 0], knee: [0, 0], sh: [0, 0], el: [-0.12, -0.12], y: 0 }, J_SIT = { hip: [-1.4, -1.4], knee: [1.4, 1.4], sh: [-0.32, -0.32], el: [-0.85, -0.85], y: -0.35 };
+const J = JSON.parse(JSON.stringify(J_STAND));
+const ARM_DOWN = 0.72, _ax = new THREE.Vector3(), _q = new THREE.Quaternion();
 function applyJ(gaitPhase) {
   const g = gaitPhase == null ? null : Math.sin(gaitPhase);
   for (let i = 0; i < 2; i++) {
-    const sw = g == null ? 0 : (i ? -g : g) * 0.38, kb = g == null ? 0 : Math.max(0, (i ? g : -g)) * 0.55;
-    cHip[i].rotation.x = J.hip[i] + sw; cKnee[i].rotation.x = J.knee[i] + kb;
-    shoulders[i].rotation.x = J.sh[i] - sw * 0.7;
+    const s = i ? 'R' : 'L', sx = i ? -1 : 1;
+    const sw = g == null ? 0 : (i ? -g : g) * 0.36, kb = g == null ? 0 : Math.max(0, (i ? g : -g)) * 0.6;
+    BN['upperleg01.' + s].rotation.x = J.hip[i] + sw; BN['lowerleg01.' + s].rotation.x = J.knee[i] + kb;
+    BN['foot.' + s].rotation.x = g == null ? 0 : -Math.max(0, (i ? -g : g)) * 0.25;
+    const ua = BN['upperarm01.' + s]; ua.rotation.set(J.sh[i] - sw * 0.6, 0, -sx * ARM_DOWN);
+    // 肘关节绕身体左右轴屈曲（换算到上臂局部坐标）
+    _ax.set(1, 0, 0).applyQuaternion(_q.copy(ua.quaternion).invert());
+    BN['lowerarm01.' + s].quaternion.setFromAxisAngle(_ax, J.el[i] - (g == null ? 0 : Math.abs(g) * 0.15));
   }
   hipL.rotation.x = J.hip[0] + (g == null ? 0 : g * 0.3); hipR.rotation.x = J.hip[1] + (g == null ? 0 : -g * 0.3);
+  BN.spine05.rotation.y = g == null ? 0 : g * 0.06;
   body.position.y = J.y + (g == null ? 0 : Math.abs(g) * 0.012);
 }
-function jointsTo(T, ms) { const a = JSON.parse(JSON.stringify(J)); return new Promise(r => tween(ms, (k) => { for (const key of ['hip', 'knee', 'sh']) for (let i = 0; i < 2; i++) J[key][i] = a[key][i] + (T[key][i] - a[key][i]) * k; J.y = a.y + (T.y - a.y) * k; applyJ(); }, r, 'pat-j')); }
+function jointsTo(T, ms) { const a = JSON.parse(JSON.stringify(J)); return new Promise(r => tween(ms, (k) => { for (const key of ['hip', 'knee', 'sh', 'el']) for (let i = 0; i < 2; i++) J[key][i] = a[key][i] + (T[key][i] - a[key][i]) * k; J.y = a.y + (T.y - a.y) * k; applyJ(); }, r, 'pat-j')); }
+applyJ();
+// 面部：眨眼、说话口型、注视学生
+const FACE = { talkUntil: 0, nextBlink: 1500, blinkT: -1, worry: 0 };
+const MI = HUM.mesh.morphTargetDictionary, MF = HUM.mesh.morphTargetInfluences;
+function talk(text) { FACE.talkUntil = now() + Math.min(9000, 600 + String(text || '').length * 170); }
+function faceTick(t, cam) {
+  if (FACE.blinkT < 0 && t > FACE.nextBlink) FACE.blinkT = t;
+  if (FACE.blinkT >= 0) { const k = (t - FACE.blinkT) / 160; MF[MI.blink] = k < 1 ? Math.sin(Math.min(1, k) * Math.PI) : 0; if (k >= 1) { FACE.blinkT = -1; FACE.nextBlink = t + 2200 + Math.random() * 3500; } }
+  const talking = now() < FACE.talkUntil;
+  const syl = talking ? Math.max(0, Math.sin(t * 0.021) * 0.6 + Math.sin(t * 0.037 + 1) * 0.4) : 0;
+  MF[MI.jaw] += ((talking ? 0.08 + 0.32 * syl : 0) - MF[MI.jaw]) * 0.35;
+  MF[MI.kiss] += ((talking ? 0.25 * Math.max(0, Math.sin(t * 0.013)) : 0) - MF[MI.kiss]) * 0.2;
+  MF[MI.worry] += (FACE.worry - MF[MI.worry]) * 0.05;
+  // 呼吸
+  BN.spine02.rotation.x = Math.sin(t * 0.0016) * 0.012;
+  // 头部朝向学生（限幅）
+  if (patient.visible && P.posture !== 'supine' && cam) {
+    const cp = new THREE.Vector3(); cam.getWorldPosition(cp); const hp = new THREE.Vector3(); BN.neck01.getWorldPosition(hp);
+    const inv = new THREE.Matrix4().copy(patient.matrixWorld).invert(); const d = cp.clone().applyMatrix4(inv).sub(hp.clone().applyMatrix4(inv));
+    const yaw = Math.max(-0.7, Math.min(0.7, Math.atan2(d.x, d.z))), pit = Math.max(-0.3, Math.min(0.3, -Math.atan2(d.y, Math.hypot(d.x, d.z))));
+    BN.neck01.rotation.y += (yaw * 0.45 - BN.neck01.rotation.y) * 0.06; BN.head.rotation.y += (yaw * 0.55 - BN.head.rotation.y) * 0.06; BN.head.rotation.x += (pit * 0.6 - BN.head.rotation.x) * 0.06;
+  } else { BN.neck01.rotation.y *= 0.9; BN.head.rotation.y *= 0.9; BN.head.rotation.x *= 0.9; }
+}
 
 const gsvCurve = legL.gsvCurve, veinSegs = legL.gsvSegs, tribs = legL.tribs.filter(t => ['trib', 'pav'].includes(t.userData.key));
 const VEIN = new THREE.Color(0x3a56b8), VEIN_E = new THREE.Color(0xc9a896), ABL = new THREE.Color(0x8a8a8a);
@@ -236,7 +276,7 @@ STEPS[5].tip = [U_TIP, 0.004, -1, U_THIGH];
 const tourniquet = new THREE.Mesh(new THREE.TorusGeometry(0.093, 0.011, 8, 28), mat(0x2f6fdf)); tourniquet.rotation.x = Math.PI / 2; tourniquet.position.set(0.1, 0.8, 0); tourniquet.visible = false; body.add(tourniquet);
 // 手术用：导管、肿胀晕圈、绷带、手术台、器械盘
 const catheter = new THREE.Mesh(new THREE.BufferGeometry(), mat(0xf5f5f5)); catheter.visible = false; body.add(catheter);
-const catTip = new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.0022, 0.07, 10), new THREE.MeshStandardMaterial({ color: 0xc8803c, metalness: 0.6, roughness: 0.3, emissive: 0x000000 })); catTip.visible = false; body.add(catTip);
+const catTip = new THREE.Mesh(new THREE.CylinderGeometry(0.0024, 0.0024, 0.07 * KLEG, 12), new THREE.MeshStandardMaterial({ color: 0xb8bec6, metalness: 0.8, roughness: 0.25, emissive: 0x000000 })); catTip.visible = false; body.add(catTip);
 const halo = new THREE.Mesh(new THREE.BufferGeometry(), mat(0x6fd3ff, { transparent: true, opacity: 0.35, depthWrite: false })); halo.visible = false; body.add(halo);
 function tubeAlong(u0, u1, r) { const pts = []; for (let k = 0; k <= 24; k++) pts.push(gsvCurve.getPointAt(Math.max(0, u0 + (u1 - u0) * k / 24))); return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 48, r, 8); }
 function setCatheter(uTip) {
@@ -264,6 +304,7 @@ const drape = new THREE.Group(); drape.visible = false; body.add(drape);
 const table = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.06, 1.9), mat(0x7c8a96)); table.position.set(BED.x, 0.72, BED.z); table.visible = false; scene.add(table);
 const tableLeg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.7, 0.2), mat(0x5e6b77)); tableLeg.position.set(BED.x, 0.35, BED.z); tableLeg.visible = false; scene.add(tableLeg);
 const tray = buildTray(); tray.group.position.set(0.74, 0.95, -0.72); tray.group.rotation.y = -0.4; tray.group.visible = false; scene.add(tray.group);
+const gen = buildGenerator(); gen.group.position.set(0.42, 0.9, -1.42); gen.group.rotation.y = 0.55; gen.group.visible = false; scene.add(gen.group);
 const toolPick = []; for (const t of Object.values(tray.tools)) t.traverse(o => { if (o.isMesh) toolPick.push(o); });
 
 // 虚拟诊室
@@ -276,8 +317,8 @@ function applyScene() {
 }
 // 解剖导览：放大的独立左下肢模型
 const showcase = new THREE.Group(); scene.add(showcase); showcase.visible = false;
-const legA = buildLeg({ side: 1, varicose: true, skinColor: SKIN });
-legA.group.position.set(-0.1, 0, 0); showcase.add(legA.group); showcase.scale.setScalar(1.45); showcase.position.set(0.62, 0.12, -1.15);
+const legA = buildLeg({ side: 1, varicose: true });
+legA.group.position.set(-0.12, 0, 0); showcase.add(legA.group); showcase.scale.setScalar(1.45); showcase.position.set(0.62, 0.12, -1.15);
 const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.06, 32), mat(0x9aa6b2)); stand.position.set(0.62, 0.03, -1.15); stand.visible = false; scene.add(stand);
 const A = { skin: 'xray', on: { sup: true, perf: true, deep: true, art: true, nerve: true, bone: true, fascia: false }, sel: null, rot: 0, labels: true };
 const LAYER_NAMES = [['sup', '浅静脉'], ['perf', '穿通静脉'], ['deep', '深静脉'], ['art', '动脉'], ['nerve', '神经'], ['bone', '骨骼'], ['fascia', '隐筋膜']];
@@ -310,6 +351,7 @@ const bubbleTex = new THREE.CanvasTexture(bubbleCv); bubbleTex.colorSpace = THRE
 const bubble = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.24), new THREE.MeshBasicMaterial({ map: bubbleTex, transparent: true }));
 bubble.position.set(0, 1.98, 0.05); bubble.visible = false; body.add(bubble);
 function setBubble(t) {
+  talk(t);
   const c = bubbleCv.getContext('2d'); c.clearRect(0, 0, 900, 300);
   c.fillStyle = 'rgba(255,255,255,0.96)'; rr(c, 6, 6, 888, 260, 26); c.fill(); c.strokeStyle = '#b8c4cf'; c.lineWidth = 3; c.stroke();
   c.beginPath(); c.moveTo(420, 264); c.lineTo(450, 296); c.lineTo(480, 264); c.fill();
@@ -343,7 +385,7 @@ function showTip(obj, label) {
 }
 
 // 患者位置与动画（走路、坐下、躺床）
-const SUP = { p: [BED.x, 0.8, BED.z + 0.8], r: [-Math.PI / 2, 0, 0] };
+const SUP = { p: [BED.x, BED.h + 0.092, BED.z + 0.8], r: [-Math.PI / 2, 0, 0] };
 const yawTo = (x, z) => Math.atan2(-x, -z);           // 面向学生（原点）
 const YAW = { front: yawTo(...SPOTS.front), chair: yawTo(...SPOTS.chair), exam: yawTo(...SPOTS.exam) + 1.0, bedside: 0, door: 0 };
 const P = { posture: 'stand', spot: 'front', seq: 0 };
@@ -377,12 +419,13 @@ async function placePatient(m, instant) {
   if (instant) { P.seq++; placeInstant(t); return; }
   if (P.posture === t.posture && P.spot === t.spot) return;
   const id = ++P.seq, alive = () => id === P.seq;
+  tween(1, () => {}, null, 'pat-j');
   if (P.posture === 'supine') {
     const a = { p: patient.position.clone(), r: patient.rotation.clone() }, b = SPOTS.bedside;
     await tw(1000, (k) => { patient.position.set(a.p.x + (b[0] - a.p.x) * k, a.p.y * (1 - k), a.p.z + (b[1] - a.p.z) * k); patient.rotation.set(a.r.x * (1 - k), a.r.y * (1 - k), 0); }, 'pat-p');
     if (!alive()) return; P.posture = 'stand'; P.spot = 'bedside';
   }
-  if (P.posture === 'sit') { await jointsTo(J_STAND, 750); if (!alive()) return; P.posture = 'stand'; }
+  if (P.posture === 'sit' || JSON.stringify(J) !== JSON.stringify(J_STAND)) { await jointsTo(J_STAND, 750); if (!alive()) return; P.posture = 'stand'; }
   if (P.posture === 'away') { patient.position.set(SPOTS.door[0], 0, SPOTS.door[1]); patient.rotation.set(0, Math.PI, 0); patient.visible = true; openDoor(); setBubble('医生你好，可以进来吗？'); P.posture = 'stand'; await walkTo(SPOTS.doorIn, alive); if (!alive()) return; }
   if (t.posture === 'away') { await walkTo(SPOTS.door, alive); if (alive()) { patient.visible = false; P.posture = 'away'; P.spot = 'door'; } return; }
   if (S.mod === 'exam' || m === 'us' || m === 'surg') { if (S.exam.exposed || m !== 'exam') setPants(false); }
@@ -394,7 +437,7 @@ async function placePatient(m, instant) {
     await turnTo(Math.PI / 2); if (!alive()) return;
     const a = { p: patient.position.clone(), r: patient.rotation.clone() };
     await tw(1100, (k) => { patient.position.set(a.p.x + (SUP.p[0] - a.p.x) * k, SUP.p[1] * Math.sin(k * Math.PI / 2), a.p.z + (SUP.p[2] - a.p.z) * k); patient.rotation.set(SUP.r[0] * k, a.r.y * (1 - k), 0); }, 'pat-p');
-    if (!alive()) return; P.posture = 'supine'; P.spot = 'bed'; if (S.mod === 'surg') restoreSurg3D();
+    if (!alive()) return; Object.assign(J, JSON.parse(JSON.stringify(J_STAND))); applyJ(); P.posture = 'supine'; P.spot = 'bed'; if (S.mod === 'surg') restoreSurg3D();
   } else { await turnTo(YAW[t.spot] ?? 0); if (alive()) P.posture = 'stand'; }
   P.arrived = true; render();
 }
@@ -447,7 +490,7 @@ function go(m) {
   hotspots.forEach(h => h.visible = (m === 'exam' && h.userData.kind === 'exam' && S.exam.exposed && S.exam.posture === 'stand') || (m === 'surg' && h.userData.kind === 'surg' && S.surg.cur === 3));
   const surg = m === 'surg', ana = m === 'anatomy';
   patient.visible = !ana; showcase.visible = stand.visible = ana; if (ana) applyAnatomy();
-  placePatient(m); tray.group.visible = surg; applyScene();
+  placePatient(m); tray.group.visible = gen.group.visible = surg; applyScene();
   setSkin(legL, surg && S.surg.xray ? 'xray' : 'solid');
   if (surg || (m === 'us' && S.scene === 'clinic')) setPants(false); else if (S.scene === 'mr' || m === 'exam') setPants(!S.exam.exposed); updateLegs(); drape.visible = surg; shorts.visible = !surg;
   bubble.visible = !surg && !ana && (S.chat.length > 0 || S.mod === 'interview'); tourniquet.visible = false;
@@ -760,10 +803,10 @@ function insertPlace(u, deg, depth, skinOff = 0) {
 }
 function hoverPlace(u, up = 0.07, along = 0) { const { p, n, t } = skinPose(u); return { p: p.clone().addScaledVector(n, up).addScaledVector(t, along), q: new THREE.Quaternion() }; }
 function seqTool(n) {
-  if (n === '穿刺针') toolTo('needle', insertPlace(U_KNEE, 30, 0.012));
-  if (n === '导丝') toolTo('wire', hoverPlace(U_KNEE, 0.05, 0.08));
-  if (n === '鞘管') { toolHome('needle'); toolTo('sheath', insertPlace(U_KNEE, 20, 0.045)); }
-  if (n === '射频导管') { toolHome('wire'); toolTo('catheter', hoverPlace(U_KNEE, 0.03, 0.18)); setCatheter(U_KNEE - 0.05); }
+  if (n.includes('穿刺针')) toolTo('needle', insertPlace(U_KNEE, 30, 0.012));
+  if (n.includes('导丝')) toolTo('wire', hoverPlace(U_KNEE, 0.05, 0.08));
+  if (n.includes('鞘')) { toolHome('needle'); toolTo('sheath', insertPlace(U_KNEE, 20, 0.045)); }
+  if (n.includes('射频导管')) { toolHome('wire'); toolTo('catheter', hoverPlace(U_KNEE, 0.03, 0.18)); setCatheter(U_KNEE - 0.05); gen.show({ state: '已连接' }); }
 }
 function after3D(i) {
   if (i === 1) { toolTo('pen', insertPlace(0.035, 70, -0.002)); setTimeout(() => toolHome('pen'), 1600); }
@@ -772,11 +815,21 @@ function after3D(i) {
   if (i === 5) { const k0 = U_KNEE - 0.05; tween(1400, (k) => setCatheter(k0 + (U_TIP - k0) * k)); }
   if (i === 6) { toolTo('syringe', insertPlace(0.3, 25, 0.01)); setTimeout(() => toolHome('syringe'), 2000); halo.geometry.dispose(); halo.geometry = tubeAlong(Math.max(0, U_TIP - 0.008), U_KNEE + 0.01, 0.011); halo.visible = true; }
   if (i === 7) {
+    // 头低脚高位；每段 20 秒（演示压缩为约 1 秒）、回撤 6.5 cm，第一段加热 2 次
     tween(600, (k) => patient.rotation.z = -0.12 * k); catTip.material.emissive.setHex(0xff5a00);
+    const du = 0.065 * KLEG / legL.length, plan = [];
+    for (let u = U_TIP, n = 1; u < U_KNEE - du * 0.3; u += du, n++) { plan.push({ u, n, c: 1 }); if (n === 1) plan.push({ u, n, c: 2 }); }
     const segs = veinSegs.filter(s => s.userData.u1 > U_TIP && s.userData.u0 < U_KNEE);
-    tween(3600, (k) => { const u = U_TIP + (U_KNEE - U_TIP) * k; segs.forEach(s => { if (s.userData.u0 < u) { s.userData.abl = 1; paintVein(s); } }); setCatheter(u); }, () => { hideCatheter(); catTip.material.emissive.setHex(0); halo.visible = false; tween(600, (k) => patient.rotation.z = -0.12 * (1 - k)); });
+    let k = 0;
+    const next = () => {
+      if (k >= plan.length || S.mod !== 'surg') { hideCatheter(); catTip.material.emissive.setHex(0); halo.visible = false; gen.show({ state: '完成', seg: plan.length - 1 }); tween(600, (q) => patient.rotation.z = -0.12 * (1 - q)); return; }
+      const p = plan[k++]; setCatheter(p.u);
+      tween(1000, (q) => { gen.show({ state: '加热中', temp: Math.round(60 + 60 * Math.min(1, q * 4)), time: Math.max(0, Math.round(20 - 20 * q)), power: Math.round(q < 0.25 ? 40 - q * 40 : 18 - q * 6), seg: p.n, cycle: p.c });
+        segs.forEach(s => { if (s.userData.u0 < p.u + du * q && s.userData.u1 > p.u) { s.userData.abl = 1; paintVein(s); } }); }, () => setTimeout(next, 220));
+    };
+    setTimeout(next, 650);
   }
-  if (i === 8) { tribs.forEach(t => { t.userData.abl = 1; paintVein(t); }); toolHome('sheath'); }
+  if (i === 8) { tribs.forEach(t => { t.userData.abl = 1; paintVein(t); }); toolHome('sheath'); toolTo('hook', insertPlace(legL.uAtY(0.35), 40, 0.004)); setTimeout(() => toolHome('hook'), 1800); }
   if (i === 9) { toolTo('bandage', hoverPlace(U_ANKLE, 0.05)); bandages.forEach((b, j) => setTimeout(() => b.visible = true, 400 + j * 140)); setTimeout(() => toolHome('bandage'), 2400); }
 }
 function restoreSurg3D() {
@@ -984,6 +1037,7 @@ renderer.setAnimationLoop((t) => {
     S.gaze[1]++; if (camDir.dot(toPt) > Math.cos(0.45)) S.gaze[0]++;
     if (t - lastTick > 1000) { lastTick = t; render(); }
   }
+  faceTick(t, renderer.xr.isPresenting ? renderer.xr.getCamera() : camera);
   if (bubble.visible) { const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera; const cp = new THREE.Vector3(); cam.getWorldPosition(cp); bubble.lookAt(cp); }
   renderer.render(scene, camera);
 });
@@ -1030,4 +1084,7 @@ document.fonts?.ready?.then(() => render());
 applyScene(); placePatient('home', true); render(); updateOverlay();
 window.__S = S; window.__go = go;  window.__ask = ask; window.__totals = totals;
 window.__click = (id) => { const h = hits.find(b => b.id === id); if (!h) return false; h.fn(); render(); return true; };
+window.__hum = HUM; window.__HM = HM;
 window.__ids = () => hits.map(h => h.id);
+window.__view = (x, y, z, tx, ty, tz) => { camera.position.set(x, y, z); camera.lookAt(tx, ty, tz); };
+window.__J = () => JSON.stringify({ J, ua: BN["upperarm01.L"].rotation.toArray(), la: BN["lowerarm01.L"].quaternion.toArray(), post: P.posture });

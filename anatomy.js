@@ -3,67 +3,56 @@
 import * as THREE from './three.module.min.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
-const PROFILE = [[0.03, 0.036], [0.055, 0.034], [0.09, 0.031], [0.13, 0.033], [0.2, 0.041], [0.28, 0.052], [0.34, 0.056], [0.4, 0.053], [0.46, 0.047], [0.5, 0.05], [0.55, 0.054], [0.62, 0.062], [0.7, 0.07], [0.8, 0.078], [0.9, 0.083], [0.97, 0.086]];
 const g = (x, m, s) => Math.exp(-((x - m) ** 2) / (2 * s * s));
-function base(y) {
-  if (y <= PROFILE[0][0]) return PROFILE[0][1];
-  for (let i = 1; i < PROFILE.length; i++) { const [y1, r1] = PROFILE[i]; if (y <= y1) { const [y0, r0] = PROFILE[i - 1], k = (y - y0) / (y1 - y0), s = (1 - Math.cos(k * Math.PI)) / 2; return r0 + (r1 - r0) * s; } }
-  return PROFILE[PROFILE.length - 1][1];
+// 腿形数据来自 MakeHuman（CC0）真实人体网格：中心线 + 每个高度/方位的皮面半径（射线求交）
+let L = null, LB = null;
+export async function initLegData(base = './') {
+  if (L) return L;
+  const [j, b] = await Promise.all([fetch(base + 'legs.json').then(r => r.json()), fetch(base + 'legs.bin').then(r => r.arrayBuffer())]);
+  L = j; LB = b; return L;
 }
-export const cx = (y) => 0.1 - Math.max(0, y - 0.8) * 0.05;
-export const cz = (y) => -0.004 * g(y, 0.08, 0.05);
+export const legK = () => L.k;
+const yi = (y) => { const f = Math.min(L.ny - 1.001, Math.max(0, (y - L.y0) / L.dy)); const i = Math.floor(f); return [i, f - i]; };
+export const cx = (y) => { const [i, t] = yi(y); return L.cx[i] * (1 - t) + L.cx[i + 1] * t; };
+export const cz = (y) => { const [i, t] = yi(y); return L.cz[i] * (1 - t) + L.cz[i + 1] * t; };
 // θ：0=前方，+=外侧，−=内侧，±π=后方
 export function legR(y, th) {
-  const c = Math.cos(th), s = Math.sin(th), back = Math.max(0, -c), front = Math.max(0, c), med = Math.max(0, -s), lat = Math.max(0, s);
-  const ez = y < 0.5 ? 0.92 : 0.95, ell = 1 / Math.sqrt(s * s + (c / ez) ** 2);
-  let k = 1;
-  k += 0.2 * g(y, th < 0 ? 0.32 : 0.35, 0.075) * back ** 1.4;           // 腓肠肌（内侧头略低）
-  k -= 0.12 * g(y, 0.13, 0.04) * back ** 2;                             // 跟腱区变窄
-  k += 0.1 * g(y, 0.1, 0.018) * g(th, -1.57, 0.35);                     // 内踝
-  k += 0.11 * g(y, 0.085, 0.018) * g(th, 1.57, 0.35);                   // 外踝
-  k += 0.12 * g(y, 0.505, 0.03) * g(th, 0, 0.45);                       // 髌骨
-  k -= 0.06 * g(y, 0.5, 0.035) * back ** 2;                             // 腘窝
-  k += 0.06 * g(y, 0.7, 0.1) * front ** 1.5;                            // 股四头肌
-  k += 0.06 * g(y, 0.83, 0.07) * med ** 1.5;                            // 内收肌群
-  k += 0.03 * g(y, 0.42, 0.08) * lat * front;                           // 胫前肌
-  return base(y) * ell * k;
+  const [i, t] = yi(y); let a = ((th + Math.PI) / (2 * Math.PI)) * L.nt; a = ((a % L.nt) + L.nt) % L.nt;
+  const j = Math.floor(a), u = a - j, j2 = (j + 1) % L.nt;
+  const r0 = L.R[i][j] * (1 - u) + L.R[i][j2] * u, r1 = L.R[i + 1][j] * (1 - u) + L.R[i + 1][j2] * u;
+  return r0 * (1 - t) + r1 * t;
 }
 export function dirOf(th, side) { return V(side * Math.sin(th), 0, Math.cos(th)); }
 export function surf(y, th, side = 1, off = 0) { const r = legR(y, th) + off, d = dirOf(th, side); return V(side * cx(y) + d.x * r, y, cz(y) + d.z * r); }
 export function inner(y, th, frac, side = 1) { const r = legR(y, th) * frac, d = dirOf(th, side); return V(side * cx(y) + d.x * r, y, cz(y) + d.z * r); }
 export function normalAt(p, side = 1) { return V(p.x - side * cx(p.y), 0, p.z - cz(p.y)).normalize(); }
+const lm = (n, side) => { const p = L.land[n]; return V(side * p[0], p[1], p[2]); };
+const pt = (p, side) => V(side * p[0], p[1], p[2]);
 
+// 皮肤：真实人体下肢网格（含足），左腿用独立贴图（烘焙曲张静脉、色素沉着）
 function skinGeometry(side) {
-  const NY = 96, NT = 60, pos = [], idx = [], uv = [];
-  for (let j = 0; j <= NY; j++) {
-    const y = 0.035 + (0.97 - 0.035) * j / NY;
-    for (let i = 0; i <= NT; i++) { const th = -Math.PI + 2 * Math.PI * i / NT; const p = surf(y, th, side); pos.push(p.x, p.y, p.z); uv.push(i / NT, j / NY); }
-  }
-  for (let j = 0; j < NY; j++) for (let i = 0; i < NT; i++) { const a = j * (NT + 1) + i, b = a + NT + 1; side > 0 ? idx.push(a, a + 1, b, a + 1, b + 1, b) : idx.push(a, b, a + 1, a + 1, b, b + 1); }
-  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); geo.setIndex(idx); geo.computeVertexNormals(); return geo;
+  const k = side > 0 ? 'L' : 'R', A = (n, T) => { const [o, l] = L.off[k + n]; return new T(LB.slice(o, o + l)); };
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(A('pos', Float32Array), 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(A('nor', Float32Array), 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(A('uv', Float32Array), 2));
+  geo.setIndex(new THREE.BufferAttribute(A('idx', Uint16Array), 1));
+  return geo;
 }
-function footGeometry(side) {
-  const NZ = 40, NA = 36, pos = [], idx = [];
-  for (let j = 0; j <= NZ; j++) {
-    const t = j / NZ, z = -0.055 + t * 0.235;
-    const cap = Math.sqrt(Math.max(0.04, Math.min(1, t / 0.14, (1 - t) / 0.1)));
-    const w = (0.052 + 0.042 * Math.sin(Math.min(1, t * 1.25) * Math.PI * 0.62)) * cap;
-    const h = (t < 0.3 ? 0.072 - (0.3 - t) * 0.05 : 0.072 - (t - 0.3) * 0.072) * (0.35 + 0.65 * cap);
-    const xc = side * (0.1 + (t - 0.4) * 0.012);
-    for (let i = 0; i <= NA; i++) {
-      const a = 2 * Math.PI * i / NA, ca = Math.cos(a), sa = Math.sin(a);
-      const ex = Math.sign(ca) * Math.abs(ca) ** 0.85, ey = Math.sign(sa) * Math.abs(sa) ** 0.9;
-      let y = h / 2 + (h / 2) * ey; if (sa < 0) { y = Math.max(0.002, y); if (t > 0.3 && t < 0.7 && ca * side < 0) y += 0.008 * Math.sin((t - 0.3) / 0.4 * Math.PI) * -sa; }
-      pos.push(xc + side * (w / 2) * ex, y + 0.004, z);
-    }
-  }
-  for (let j = 0; j < NZ; j++) for (let i = 0; i < NA; i++) { const a = j * (NA + 1) + i, b = a + NA + 1; side > 0 ? idx.push(a, b, a + 1, a + 1, b, b + 1) : idx.push(a, a + 1, b, a + 1, b + 1, b); }
-  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setIndex(idx); geo.computeVertexNormals(); return geo;
-}
+const TEX = {};
+function tex(url, srgb = true) { if (TEX[url]) return TEX[url]; const t = new THREE.TextureLoader().load(url); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return (TEX[url] = t); }
 
 // 迂曲静脉：在两点之间沿皮面生成蛇形路径
+let SEED = 1; const rnd = () => ((SEED = (SEED * 16807) % 2147483647) / 2147483647);
 function tortuous(y0, t0, y1, t1, side, amp, waves, off, n = 60) {
-  const pts = []; for (let k = 0; k <= n; k++) { const f = k / n, y = y0 + (y1 - y0) * f + 0.004 * Math.sin(f * waves * 2.3 * Math.PI), th = t0 + (t1 - t0) * f + amp * Math.sin(f * waves * Math.PI * 2) * Math.sin(f * Math.PI); pts.push(surf(y, th, side, off)); } return pts;
+  const p1 = rnd() * 6.28, p2 = rnd() * 6.28, p3 = rnd() * 6.28, k2 = 1.5 + rnd() * 0.6, pts = [];
+  for (let k = 0; k <= n; k++) {
+    const f = k / n, env = Math.sin(f * Math.PI) ** 0.6;
+    const y = y0 + (y1 - y0) * f + 0.006 * Math.sin(f * waves * 3.1 * Math.PI + p3) * env;
+    const th = t0 + (t1 - t0) * f + amp * env * (0.62 * Math.sin(f * waves * Math.PI * 2 + p1) + 0.38 * Math.sin(f * waves * k2 * Math.PI * 2 + p2));
+    pts.push(surf(y, th, side, off));
+  }
+  return pts;
 }
 const curve = (pts) => new THREE.CatmullRomCurve3(pts, false, 'centripetal');
 const tube = (c, r, mat, seg = 64, rs = 10) => new THREE.Mesh(new THREE.TubeGeometry(c, seg, r, rs), mat);
@@ -100,22 +89,22 @@ export function buildLeg({ side = 1, varicose = false, skinColor = 0xe7c3a5 } = 
   const M = (key, color, o = {}) => (mats[key] ||= new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0, ...o }));
   const add = (mesh, layer, key) => { mesh.userData.layer = layer; mesh.userData.key = key; grp.add(mesh); layers[layer].push(mesh); if (key) pick.push(mesh); return mesh; };
   // 皮肤与足
-  const skinMat = M('skin', skinColor, { roughness: 0.78 });
+  const skinMat = M('skin', 0xffffff, side > 0 && varicose ? { map: tex('skin_legL.jpg'), bumpMap: tex('skin_legL_bump.jpg', false), bumpScale: 1.2, roughness: 0.6 } : { map: tex('skin_base.jpg'), bumpMap: tex('skin_bump.jpg', false), bumpScale: 0.6, roughness: 0.62 });
   add(new THREE.Mesh(skinGeometry(side), skinMat), 'skin', 'skin');
-  add(new THREE.Mesh(footGeometry(side), skinMat), 'skin', 'skin');
   for (const m of layers.skin) m.renderOrder = 2;
   // 骨骼
   const bone = M('bone', COL.bone, { roughness: 0.7 });
   const bx = (y, th = 0, f = 0) => inner(y, th, f, side);
-  const femurC = curve([V(side * 0.075, 0.9, -0.005), bx(0.8, 0.4, 0.15), bx(0.66, 0.3, 0.1), bx(0.53, 0, 0.05)]);
+  const hip = lm('upperleg01.L', side), fh = V(hip.x - side * 0.03, hip.y + 0.02, hip.z - 0.02);
+  const femurC = curve([V(hip.x - side * 0.005, hip.y - 0.005, hip.z - 0.015), bx(0.8, 0.4, 0.15), bx(0.66, 0.3, 0.1), bx(0.53, 0, 0.05)]);
   add(tube(femurC, 0.0135, bone, 24, 10), 'bone', 'femur');
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.022, 16, 12), bone); head.position.set(side * 0.06, 0.93, -0.005); add(head, 'bone', 'femur');
-  const neck = tube(curve([V(side * 0.062, 0.928, -0.005), V(side * 0.075, 0.905, -0.005), V(side * 0.09, 0.89, -0.004)]), 0.011, bone, 8, 8); add(neck, 'bone', 'femur');
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.022, 16, 12), bone); head.position.copy(fh); add(head, 'bone', 'femur');
+  const neck = tube(curve([fh, V(hip.x - side * 0.012, hip.y + 0.005, hip.z - 0.017), V(hip.x, hip.y - 0.01, hip.z - 0.015)]), 0.011, bone, 8, 8); add(neck, 'bone', 'femur');
   for (const dx of [-1, 1]) { const c = new THREE.Mesh(new THREE.SphereGeometry(0.02, 16, 12), bone); c.scale.set(1, 0.9, 1.25); const p = bx(0.51, 0, 0); c.position.set(p.x + side * dx * 0.019, 0.51, p.z - 0.006); add(c, 'bone', 'femur'); }
   const pat = new THREE.Mesh(new THREE.SphereGeometry(0.017, 16, 10), bone); pat.scale.set(1, 1.15, 0.45); pat.position.copy(inner(0.51, 0, 0.72, side)); add(pat, 'bone', 'patella');
   const plat = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.022, 0.035, 20), bone); plat.position.copy(bx(0.468, 0, 0.05)); add(plat, 'bone', 'tibia');
   add(tube(curve([bx(0.46, 0.2, 0.18), bx(0.3, 0.2, 0.35), bx(0.12, -0.5, 0.3)]), 0.011, bone, 20, 10), 'bone', 'tibia');
-  const mm = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 10), bone); mm.scale.set(0.8, 1.3, 1); mm.position.copy(inner(0.095, -1.57, 0.72, side)); add(mm, 'bone', 'tibia');
+  const mm = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 10), bone); mm.scale.set(0.8, 1.3, 1); mm.position.copy(inner(0.095, -1.57, 0.55, side)); add(mm, 'bone', 'tibia');
   add(tube(curve([bx(0.455, 2.0, 0.55), bx(0.3, 1.9, 0.6), bx(0.1, 1.6, 0.72), inner(0.08, 1.57, 0.78, side)]), 0.005, bone, 20, 8), 'bone', 'fibula');
   // 深静脉与动脉
   const deepM = M('deep', COL.deep), artM = M('art', COL.art);
@@ -128,20 +117,20 @@ export function buildLeg({ side = 1, varicose = false, skinColor = 0xe7c3a5 } = 
   const popPts = [inner(0.53, -2.6, 0.42, side), inner(0.5, 3.05, 0.42, side), inner(0.445, 3.0, 0.4, side)];
   add(tube(curve(popPts), 0.0052, M('pop', COL.deep), 20, 10), 'deep', 'pop');
   const tibM = M('tib', COL.deep);
-  for (const d of [-0.13, 0.13]) add(tube(curve([inner(0.445, 3.0, 0.4, side), inner(0.38, -2.75 + d, 0.42, side), inner(0.25, -2.35 + d, 0.48, side), inner(0.14, -2.15 + d, 0.58, side), inner(0.085, -2.05 + d, 0.66, side)]), 0.0026, tibM, 40, 8), 'deep', 'tib');
+  for (const d of [-0.13, 0.13]) add(tube(curve([inner(0.445, 3.0, 0.4, side), inner(0.38, -2.75 + d, 0.42, side), inner(0.25, -2.35 + d, 0.48, side), inner(0.14, -2.15 + d, 0.52, side), inner(0.1, -2.05 + d, 0.45, side)]), 0.0026, tibM, 40, 8), 'deep', 'tib');
   add(tube(curve([inner(0.44, 2.9, 0.4, side), inner(0.42, 1.4, 0.35, side), inner(0.3, 0.6, 0.55, side), inner(0.12, 0.25, 0.62, side)]), 0.0022, tibM, 30, 8), 'deep', 'tib');
   const gastM = M('gast', 0x2c3d8f);
   for (const [y, th] of [[0.36, 2.6], [0.33, -2.7], [0.3, 2.9]]) add(tube(curve([inner(y + 0.06, th, 0.5, side), inner(y, th + 0.15, 0.72, side), inner(y - 0.05, th, 0.6, side)]), 0.0028, gastM, 16, 8), 'deep', 'gast');
   const cfaM = M('cfa', COL.art), popaM = M('popa', COL.art);
   add(tube(curve([inner(0.975, -0.1, 0.48, side), inner(0.865, -0.17, 0.5, side), inner(0.78, -0.45, 0.48, side), inner(0.66, -0.98, 0.38, side), inner(0.58, -1.8, 0.36, side), inner(0.53, -2.55, 0.34, side)]), 0.0042, cfaM, 50, 10), 'art', 'cfa');
-  add(tube(curve([inner(0.53, -2.55, 0.34, side), inner(0.5, 3.1, 0.32, side), inner(0.445, 3.05, 0.32, side), inner(0.38, -2.75, 0.4, side), inner(0.25, -2.35, 0.47, side), inner(0.14, -2.15, 0.57, side), inner(0.085, -2.15, 0.66, side)]), 0.0024, popaM, 50, 8), 'art', 'popa');
-  const ata = [inner(0.44, 2.9, 0.33, side), inner(0.42, 1.4, 0.3, side), inner(0.3, 0.55, 0.52, side), inner(0.1, 0.15, 0.6, side), V(side * 0.104, 0.04, 0.04), V(side * 0.107, 0.028, 0.08)];
+  add(tube(curve([inner(0.53, -2.55, 0.34, side), inner(0.5, 3.1, 0.32, side), inner(0.445, 3.05, 0.32, side), inner(0.38, -2.75, 0.4, side), inner(0.25, -2.35, 0.47, side), inner(0.14, -2.15, 0.5, side), inner(0.1, -2.15, 0.42, side)]), 0.0024, popaM, 50, 8), 'art', 'popa');
+  const ata = [inner(0.44, 2.9, 0.33, side), inner(0.42, 1.4, 0.3, side), inner(0.3, 0.55, 0.52, side), inner(0.1, 0.15, 0.6, side), inner(0.07, 0.2, 0.5, side), pt(L.dors[1], side).add(V(0, -0.016, 0))];
   add(tube(curve(ata), 0.0022, popaM, 50, 8), 'art', 'popa');
   // 浅静脉
-  const supR = varicose ? 0.0046 : 0.0026, depth = varicose ? -0.0035 : -0.006;
+  SEED = 7; const supR = varicose ? 0.0046 : 0.0026, depth = varicose ? -0.009 : -0.009;
   const gsvPts = [sfjDeep, inner(0.862, -0.46, 0.84, side), surf(0.845, -0.52, side, depth)];
   for (const [y, th] of [[0.8, -0.62], [0.74, -0.78], [0.68, -0.95], [0.62, -1.15], [0.56, -1.45], [0.51, -1.78], [0.47, -1.85], [0.42, -1.75], [0.36, -1.6], [0.3, -1.5], [0.23, -1.4], [0.17, -1.3], [0.12, -1.1], [0.09, -0.8]]) gsvPts.push(surf(y, th, side, depth));
-  gsvPts.push(V(side * 0.09, 0.055, 0.04));
+  gsvPts.push(pt(L.gsv0, side).add(V(side * 0.009, 0.006, -0.004)));
   const gsvCurve = curve(gsvPts);
   const sfjMesh = new THREE.Mesh(new THREE.SphereGeometry(0.0075, 16, 12), M('sfj', 0x5a3db8)); sfjMesh.position.copy(gsvCurve.getPointAt(0.004)); add(sfjMesh, 'sup', 'sfj');
   const gsvMat = M('gsv', varicose ? COL.sup : COL.supN);
@@ -158,14 +147,14 @@ export function buildLeg({ side = 1, varicose = false, skinColor = 0xe7c3a5 } = 
   addTrib([surf(0.85, -0.55, side, -0.004), surf(0.87, -0.85, side, -0.004), surf(0.9, -1.15, side, -0.004)], 0.0016, 'sfj', M('sfjt', COL.supN));
   addTrib([surf(0.84, -0.48, side, -0.004), surf(0.8, -0.25, side, -0.004), surf(0.72, -0.05, side, -0.004), surf(0.64, 0.02, side, -0.004)], 0.0022, 'aasv', M('aasv', COL.supN));
   if (varicose) {
-    addTrib(tortuous(0.665, -0.98, 0.54, -1.25, side, 0.22, 3.5, 0.0002), 0.0037);
-    addTrib(tortuous(0.6, -1.25, 0.5, -1.05, side, 0.18, 2.5, 0.0002), 0.0032);
-    addTrib(tortuous(0.43, -1.76, 0.24, -1.05, side, 0.28, 4.5, 0.0004, 90), 0.0042);
-    addTrib(tortuous(0.38, -1.62, 0.22, -1.95, side, 0.22, 3.5, 0.0003, 70), 0.0037);
-    addTrib(tortuous(0.32, -1.5, 0.18, -1.2, side, 0.16, 3, 0.0002), 0.0032);
-    addTrib([surf(0.44, -1.8, side, -0.002), ...tortuous(0.4, -2.0, 0.12, -2.0, side, 0.12, 2.5, 0.0005, 40).slice(1)], 0.003, 'pav', M('pav', COL.sup));
+    addTrib(tortuous(0.665, -0.98, 0.54, -1.25, side, 0.22, 3.5, -0.004), 0.0037);
+    addTrib(tortuous(0.6, -1.25, 0.5, -1.05, side, 0.18, 2.5, -0.004), 0.0032);
+    addTrib(tortuous(0.43, -1.76, 0.24, -1.05, side, 0.28, 4.5, -0.004, 90), 0.0042);
+    addTrib(tortuous(0.38, -1.62, 0.22, -1.95, side, 0.22, 3.5, -0.004, 70), 0.0037);
+    addTrib(tortuous(0.32, -1.5, 0.18, -1.2, side, 0.16, 3, -0.004), 0.0032);
+    addTrib([surf(0.44, -1.8, side, -0.004), ...tortuous(0.4, -2.0, 0.12, -2.0, side, 0.12, 2.5, -0.0035, 40).slice(1)], 0.003, 'pav', M('pav', COL.sup));
   } else {
-    for (let i = 0; i < 7; i++) { const y = 0.28 + i * 0.022, th = 1.1 + (i % 3) * 0.12; addTrib([surf(y, th, side, 0.0004), surf(y + 0.012, th + 0.1 * (i % 2 ? 1 : -1), side, 0.0004), surf(y + 0.022, th + 0.05, side, 0.0004)], 0.0008, 'trib', M('spider', 0xc0483f)); }
+    for (let i = 0; i < 7; i++) { const y = 0.28 + i * 0.022, th = 1.1 + (i % 3) * 0.12; addTrib([surf(y, th, side, -0.0012), surf(y + 0.012, th + 0.1 * (i % 2 ? 1 : -1), side, -0.0012), surf(y + 0.022, th + 0.05, side, -0.0012)], 0.0008, 'trib', M('spider', 0xc0483f)); }
   }
   // 小隐静脉
   const ssvPts = [surf(0.07, 2.15, side, -0.004), surf(0.12, 2.5, side, -0.004), surf(0.2, 2.85, side, -0.004), surf(0.28, 3.08, side, -0.004), surf(0.36, 3.14, side, -0.004), surf(0.42, -3.12, side, -0.006), inner(0.455, 3.05, 0.6, side), inner(0.47, 3.02, 0.42, side)];
@@ -183,19 +172,8 @@ export function buildLeg({ side = 1, varicose = false, skinColor = 0xe7c3a5 } = 
   add(tube(curve([inner(0.4, 3.1, 0.75, side), surf(0.3, 3.0, side, -0.008), surf(0.18, 2.7, side, -0.008), surf(0.09, 2.2, side, -0.008)]), 0.0012, M('sural_n', COL.nerve), 40, 6), 'nerve', 'sural_n');
   // 隐筋膜鞘（大隐静脉主干大腿段）
   const fPts = []; for (let k = 0; k <= 20; k++) fPts.push(gsvCurve.getPointAt(0.05 + 0.42 * k / 20));
-  const fascia = add(tube(curve(fPts), 0.0095, M('fascia', COL.fascia, { transparent: true, opacity: 0.22, depthWrite: false }), 40, 12), 'fascia', 'fascia'); fascia.renderOrder = 3;
-  // 色素沉着（贴合皮面的小片）
-  if (varicose) {
-    const pos = [], idx = [], NA = 14, NB = 10;
-    for (let j = 0; j <= NB; j++) for (let i = 0; i <= NA; i++) { const y = 0.108 + 0.05 * j / NB, th = -1.85 + 0.75 * i / NA; const p = surf(y, th, side, 0.0012); pos.push(p.x, p.y, p.z); }
-    for (let j = 0; j < NB; j++) for (let i = 0; i < NA; i++) { const a = j * (NA + 1) + i, b = a + NA + 1; idx.push(a, a + 1, b, a + 1, b + 1, b); }
-    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setIndex(idx); geo.computeVertexNormals();
-    const cols = []; for (let j = 0; j <= NB; j++) for (let i = 0; i <= NA; i++) { const dx = (i / NA - 0.5) * 2, dy = (j / NB - 0.5) * 2, k = Math.max(0, 1 - (dx * dx + dy * dy) ** 1.2 - 0.12 * Math.sin(i * 1.7 + j)); cols.push(k); }
-    geo.setAttribute('alpha', new THREE.Float32BufferAttribute(cols, 1));
-    const pm = new THREE.MeshStandardMaterial({ color: 0x6b4428, transparent: true, roughness: 0.95, depthWrite: false });
-    pm.onBeforeCompile = (sh) => { sh.vertexShader = 'attribute float alpha;\nvarying float vA;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvA = alpha;'); sh.fragmentShader = 'varying float vA;\n' + sh.fragmentShader.replace('#include <dithering_fragment>', '#include <dithering_fragment>\ngl_FragColor.a *= vA * 0.85;'); };
-    const patch = new THREE.Mesh(geo, pm); patch.renderOrder = 4; patch.userData.layer = 'skin'; patch.userData.key = 'skin'; patch.userData.patch = true; grp.add(patch); layers.skin.push(patch);
-  }
+  const fascia = add(tube(curve(fPts), 0.0068, M('fascia', COL.fascia, { transparent: true, opacity: 0.22, depthWrite: false }), 40, 12), 'fascia', 'fascia'); fascia.renderOrder = 3;
+  // 色素沉着、曲张静脉隆起与毛细血管扩张已烘焙进左腿皮肤贴图与网格
   const uAtY = (y) => { let best = 0, bd = 9; for (let i = 0; i <= 400; i++) { const u = i / 400, d = Math.abs(gsvCurve.getPointAt(u).y - y); if (d < bd && u > 0.02) { bd = d; best = u; } } return best; };
   return { group: grp, layers, pick, gsvCurve, gsvSegs, tribs, uAtY, sfjDeep, mats, length: gsvCurve.getLength() };
 }

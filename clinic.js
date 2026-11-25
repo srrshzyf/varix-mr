@@ -48,8 +48,8 @@ export function buildClinic() {
   // 患者座椅（座面中心在患者前方约 0.18 m）
   const chair = new THREE.Group(); const [cx, cz] = SPOTS.chair; chair.position.set(cx, 0, cz); chair.rotation.y = Math.atan2(-cx, -cz); g.add(chair);
   const chairM = std(0x3f8f9c, { roughness: 0.6 });
-  box(0.46, 0.06, 0.44, chairM, 0, 0.43, 0.12, chair); box(0.46, 0.45, 0.05, chairM, 0, 0.72, -0.12, chair);
-  for (const [x, z] of [[-0.2, -0.08], [0.2, -0.08], [-0.2, 0.32], [0.2, 0.32]]) box(0.03, 0.41, 0.03, metal, x, 0.2, z, chair);
+  box(0.46, 0.06, 0.44, chairM, 0, 0.39, 0.12, chair); box(0.46, 0.45, 0.05, chairM, 0, 0.68, -0.12, chair);
+  for (const [x, z] of [[-0.2, -0.08], [0.2, -0.08], [-0.2, 0.32], [0.2, 0.32]]) box(0.03, 0.37, 0.03, metal, x, 0.18, z, chair);
   // 检查床
   const bed = new THREE.Group(); bed.position.set(BED.x, 0, BED.z); g.add(bed);
   box(0.62, 0.5, 1.6, std(0xe8ecef), 0, 0.3, -0.05, bed); box(0.66, 0.1, 1.95, std(0x5d8fa6, { roughness: 0.5 }), 0, 0.64, 0, bed);
